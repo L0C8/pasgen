@@ -127,3 +127,4 @@ The header bytes (magic → parallelism) are included as AAD in the GCM tag, so 
 ### TOTP Setup
 
 Paste the Base32 secret from your authenticator app's QR code setup screen into the **TOTP** field. The current 6-digit code and countdown timer are shown automatically.
+# pasgen
