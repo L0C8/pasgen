@@ -141,6 +141,7 @@ set(PASGEN_SOURCES
     src/app/App.cpp
     src/core/Database.cpp
     src/core/Account.cpp
+    src/core/Category.cpp
     src/crypto/CryptoEngine.cpp
     src/crypto/KeyDerivation.cpp
     src/crypto/SecureMemory.cpp
@@ -149,6 +150,8 @@ set(PASGEN_SOURCES
     src/util/Config.cpp
     src/util/Theme.cpp
     src/util/Font.cpp
+    src/util/Widgets.cpp
+    src/util/Uuid.cpp
 )
 
 add_executable(pasgen ${PASGEN_SOURCES})

@@ -32,6 +32,8 @@ public:
     const std::vector<PasswordHistoryEntry>& password_history() const { return password_history_; }
     std::chrono::system_clock::time_point created_at() const  { return created_at_; }
     std::chrono::system_clock::time_point modified_at() const { return modified_at_; }
+    const std::string& category_id() const { return category_id_; }
+    int order() const { return order_; }
 
     void set_name(const std::string& name);
     void set_email(const std::string& email);
@@ -40,6 +42,8 @@ public:
     void set_password(const SecureString& password);
     void set_notes(const std::string& notes);
     void set_totp_secret(const std::string& secret);
+    void set_category_id(const std::string& category_id);
+    void set_order(int order);
 
     nlohmann::json to_json() const;
     static Account from_json(const nlohmann::json& j);
@@ -58,10 +62,11 @@ private:
     std::vector<PasswordHistoryEntry> password_history_;
     std::chrono::system_clock::time_point created_at_;
     std::chrono::system_clock::time_point modified_at_;
+    std::string category_id_;
+    int order_ = 0;
 
     void touch();
     void archive_password();
-    static std::string generate_uuid();
     static std::string time_to_string(std::chrono::system_clock::time_point tp);
     static std::chrono::system_clock::time_point string_to_time(const std::string& str);
 };

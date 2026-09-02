@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Account.hpp"
+#include "core/Category.hpp"
 #include "crypto/CryptoEngine.hpp"
 #include "crypto/KeyDerivation.hpp"
 #include "crypto/SecureMemory.hpp"
@@ -60,6 +61,19 @@ public:
     std::vector<const Account*> search_accounts(const std::string& query) const;
     size_t account_count() const { return accounts_.size(); }
 
+    // Categories: accounts reference a category by id (empty id = "Uncategorized",
+    // which is not itself a stored Category). Account order is a dense,
+    // gap-free per-category rank maintained by move_account()/reorder_category().
+    const std::vector<Category>& categories() const { return categories_; }
+    // Returns the new category's id by value: categories_ is a vector, so any
+    // reference into it would dangle as soon as another category is added.
+    std::string add_category(const std::string& name);
+    void rename_category(const std::string& id, const std::string& name);
+    void remove_category(const std::string& id);
+    void reorder_category(const std::string& id, int new_index);
+    std::vector<Account*> get_accounts_in_category(const std::string& category_id);
+    void move_account(const std::string& account_id, const std::string& target_category_id, int target_index);
+
     bool is_dirty() const { return is_dirty_; }
     void mark_dirty()     { is_dirty_ = true; }
     const DatabaseMetadata& metadata() const { return metadata_; }
@@ -71,6 +85,7 @@ private:
     SecureString master_password_;
     DatabaseMetadata metadata_;
     std::map<std::string, Account> accounts_;
+    std::vector<Category> categories_;
     bool is_dirty_ = false;
     std::vector<uint8_t> salt_;
     CryptoEngine crypto_;
@@ -79,6 +94,7 @@ private:
     void write_to_file(const std::string& path);
     nlohmann::json to_json() const;
     void from_json(const nlohmann::json& j);
+    void normalize_category_order(const std::string& category_id);
 };
 
 } // namespace pasgen

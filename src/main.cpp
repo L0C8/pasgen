@@ -135,7 +135,9 @@ int main(int argc, char* argv[]) {
 
         ImGui::Render();
         glViewport(0, 0, display_w, display_h);
-        glClearColor(0.10f, 0.10f, 0.12f, 1.00f);
+        // Matches the active theme so resizing never flashes a foreign color.
+        ImVec4 clear = app.background_color();
+        glClearColor(clear.x, clear.y, clear.z, 1.00f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);

@@ -3,6 +3,7 @@
 #endif
 
 #include "core/Database.hpp"
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -128,6 +129,87 @@ std::vector<const Account*> Database::search_accounts(const std::string& q) cons
 
 void Database::set_name(const std::string& n) { metadata_.name = n; is_dirty_ = true; }
 
+std::string Database::add_category(const std::string& name) {
+    Category c;
+    c.set_name(name);
+    c.set_order((int)categories_.size());
+    std::string id = c.id();
+    categories_.push_back(std::move(c));
+    is_dirty_ = true;
+    return id;
+}
+
+void Database::rename_category(const std::string& id, const std::string& name) {
+    for (auto& c : categories_) {
+        if (c.id() == id) { c.set_name(name); is_dirty_ = true; return; }
+    }
+}
+
+void Database::remove_category(const std::string& id) {
+    auto it = std::find_if(categories_.begin(), categories_.end(),
+                            [&](const Category& c) { return c.id() == id; });
+    if (it == categories_.end()) return;
+    categories_.erase(it);
+    for (auto& [aid, a] : accounts_) {
+        if (a.category_id() == id) a.set_category_id("");
+    }
+    for (size_t i = 0; i < categories_.size(); ++i) categories_[i].set_order((int)i);
+    normalize_category_order("");
+    is_dirty_ = true;
+}
+
+void Database::reorder_category(const std::string& id, int new_index) {
+    auto it = std::find_if(categories_.begin(), categories_.end(),
+                            [&](const Category& c) { return c.id() == id; });
+    if (it == categories_.end()) return;
+    Category moved = *it;
+    categories_.erase(it);
+    new_index = std::clamp(new_index, 0, (int)categories_.size());
+    categories_.insert(categories_.begin() + new_index, moved);
+    for (size_t i = 0; i < categories_.size(); ++i) categories_[i].set_order((int)i);
+    is_dirty_ = true;
+}
+
+std::vector<Account*> Database::get_accounts_in_category(const std::string& category_id) {
+    std::vector<Account*> r;
+    for (auto& [id, a] : accounts_) {
+        if (a.category_id() == category_id) r.push_back(&a);
+    }
+    std::sort(r.begin(), r.end(), [](Account* a, Account* b) { return a->order() < b->order(); });
+    return r;
+}
+
+void Database::move_account(const std::string& account_id, const std::string& target_category_id, int target_index) {
+    Account* acc = get_account(account_id);
+    if (!acc) return;
+    std::string old_category = acc->category_id();
+
+    std::vector<Account*> dest;
+    for (auto& [id, a] : accounts_) {
+        if (id != account_id && a.category_id() == target_category_id) dest.push_back(&a);
+    }
+    std::sort(dest.begin(), dest.end(), [](Account* a, Account* b) { return a->order() < b->order(); });
+
+    target_index = std::clamp(target_index, 0, (int)dest.size());
+    dest.insert(dest.begin() + target_index, acc);
+
+    acc->set_category_id(target_category_id);
+    for (size_t i = 0; i < dest.size(); ++i) dest[i]->set_order((int)i);
+
+    if (old_category != target_category_id) normalize_category_order(old_category);
+
+    is_dirty_ = true;
+}
+
+void Database::normalize_category_order(const std::string& category_id) {
+    std::vector<Account*> accts;
+    for (auto& [id, a] : accounts_) {
+        if (a.category_id() == category_id) accts.push_back(&a);
+    }
+    std::stable_sort(accts.begin(), accts.end(), [](Account* a, Account* b) { return a->order() < b->order(); });
+    for (size_t i = 0; i < accts.size(); ++i) accts[i]->set_order((int)i);
+}
+
 void Database::load_from_file(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) throw DatabaseException("Failed to open: " + path);
@@ -220,6 +302,10 @@ nlohmann::json Database::to_json() const {
     nlohmann::json arr = nlohmann::json::array();
     for (const auto& [id, a] : accounts_) arr.push_back(a.to_json());
     j["accounts"] = arr;
+
+    nlohmann::json carr = nlohmann::json::array();
+    for (const auto& c : categories_) carr.push_back(c.to_json());
+    j["categories"] = carr;
     return j;
 }
 
@@ -238,6 +324,16 @@ void Database::from_json(const nlohmann::json& j) {
             accounts_[a.id()] = std::move(a);
         }
     }
+
+    categories_.clear();
+    if (j.contains("categories") && j["categories"].is_array()) {
+        for (const auto& cj : j["categories"]) categories_.push_back(Category::from_json(cj));
+    }
+
+    // Ensure a dense, gap-free per-category order even for databases saved
+    // before this field existed (all accounts default to order 0).
+    normalize_category_order("");
+    for (const auto& c : categories_) normalize_category_order(c.id());
 }
 
 } // namespace pasgen

@@ -3,6 +3,7 @@
 #endif
 
 #include "core/Account.hpp"
+#include "util/Uuid.hpp"
 #include <algorithm>
 #include <iomanip>
 #include <random>
@@ -54,6 +55,8 @@ void Account::set_url(const std::string& v)   { url_ = v;    touch(); }
 void Account::set_username(const std::string& v) { username_ = v; touch(); }
 void Account::set_notes(const std::string& v) { notes_ = v;  touch(); }
 void Account::set_totp_secret(const std::string& v) { totp_secret_ = v; touch(); }
+void Account::set_category_id(const std::string& v) { category_id_ = v; touch(); }
+void Account::set_order(int v) { order_ = v; touch(); }
 
 void Account::set_password(const SecureString& password) {
     archive_password();
@@ -73,6 +76,8 @@ nlohmann::json Account::to_json() const {
     j["totp_secret"] = totp_secret_;
     j["created_at"]  = time_to_string(created_at_);
     j["modified_at"] = time_to_string(modified_at_);
+    j["category_id"] = category_id_;
+    j["order"]        = order_;
 
     nlohmann::json hist = nlohmann::json::array();
     for (const auto& e : password_history_) {
@@ -97,6 +102,8 @@ Account Account::from_json(const nlohmann::json& j) {
     if (j.contains("totp_secret")) a.totp_secret_ = j["totp_secret"].get<std::string>();
     if (j.contains("created_at"))  a.created_at_  = string_to_time(j["created_at"].get<std::string>());
     if (j.contains("modified_at")) a.modified_at_ = string_to_time(j["modified_at"].get<std::string>());
+    if (j.contains("category_id")) a.category_id_ = j["category_id"].get<std::string>();
+    if (j.contains("order"))       a.order_       = j["order"].get<int>();
 
     if (j.contains("password_history") && j["password_history"].is_array()) {
         for (const auto& ej : j["password_history"]) {
@@ -134,25 +141,6 @@ void Account::archive_password() {
         if (password_history_.size() > 10)
             password_history_.resize(10);
     }
-}
-
-std::string Account::generate_uuid() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> d(0, 15), d2(8, 11);
-    std::ostringstream ss;
-    ss << std::hex;
-    for (int i = 0; i < 8;  i++) ss << d(gen);
-    ss << "-";
-    for (int i = 0; i < 4;  i++) ss << d(gen);
-    ss << "-4";
-    for (int i = 0; i < 3;  i++) ss << d(gen);
-    ss << "-";
-    ss << d2(gen);
-    for (int i = 0; i < 3;  i++) ss << d(gen);
-    ss << "-";
-    for (int i = 0; i < 12; i++) ss << d(gen);
-    return ss.str();
 }
 
 } // namespace pasgen

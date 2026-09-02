@@ -33,6 +33,10 @@ public:
     std::string font_id()   const { return font_id_; }
     int         font_size() const { return font_size_; }
 
+    // Window background, so the GL clear color matches the active theme
+    // instead of flashing a hardcoded color on resize.
+    ImVec4 background_color() const;
+
 private:
     enum class Screen { LOGIN, CREATE_DB, MAIN };
     Screen screen_ = Screen::LOGIN;
@@ -93,9 +97,9 @@ private:
 
     // Preferences popup (Settings menu)
     bool  prefs_open_ = false;
-    Theme prefs_theme_ = Theme::Original;
-    std::string font_id_ = "default";
-    int         font_size_ = 15;
+    Theme prefs_theme_ = Theme::Dark;
+    std::string font_id_ = "roboto";
+    int         font_size_ = 16;
     bool        font_dirty_ = false;
 
     // Delete-account confirmation popup
@@ -104,34 +108,67 @@ private:
     // Quit confirmation popup (shown when there are unsaved changes)
     bool quit_confirm_open_ = false;
 
+    // About popup (Help menu)
+    bool about_open_ = false;
+
+    // Category add/rename/delete popups (left panel)
+    bool cat_add_open_ = false;
+    char cat_add_name_[128] = {};
+
+    bool cat_rename_open_ = false;
+    std::string cat_rename_id_;
+    char cat_rename_name_[128] = {};
+
+    bool cat_delete_confirm_open_ = false;
+    std::string cat_delete_id_;
+
     // Rendering
     void render_login(int w, int h);
     void render_create_db(int w, int h);
     void render_main(int w, int h);
-    void render_passwords_panel(int w, int h);
-    void render_account_list(float width);
+    void render_menu_bar();
+    void render_toolbar();
+    void render_sidebar(float width, float height);
     void render_account_detail(float width);
+    void render_detail_placeholder(float width);
     void render_gen_popup();
     void render_chgpw_popup();
     void render_prefs_popup();
     void render_delete_confirm_popup();
     void render_quit_confirm_popup();
+    void render_about_popup();
+    void render_category_add_popup();
+    void render_category_rename_popup();
+    void render_category_delete_confirm_popup();
+    void render_category_section(const std::string& category_id, const std::string& label, bool deletable,
+                                  int color_index, bool searching, const std::string& query);
     void render_status_bar();
     void load_generator_defaults();
 
-    // Themed widgets: render as bevelled retro or glossy XP buttons under the
-    // Retro / Windows XP look and feel, or plain ImGui buttons otherwise.
-    bool button(const char* label, ImVec2 size = ImVec2(0, 0));
-    bool small_button(const char* label);
+    // Measured height of the login / create cards. The content is laid out
+    // once at a provisional height, then the card is sized to exactly fit it
+    // on subsequent frames, so adding an error banner grows the card instead
+    // of clipping the last row.
+    float login_card_h_  = 0.0f;
+    float create_card_h_ = 0.0f;
+
+    // Shared chrome for the two full-screen entry screens (login / create).
+    void begin_centered_screen(int w, int h, const char* id, float card_w, float card_h);
+    void end_centered_screen();
+    // Content height used this frame, measured from inside the open card.
+    float measure_card_content() const;
+    // Label-above-input row; returns true when edited.
+    bool field(const char* label, const char* id, char* buf, size_t n,
+                float width, ImGuiInputTextFlags flags = 0, const char* hint = nullptr);
 
     // Actions
     void do_login();
     void do_create_db();
     void do_save();
+    void do_save_as();
     void do_add_account();
     void do_delete_selected();
     void do_select_account(const std::string& id);
-    void sync_editor_to_db();
     void load_account_to_editor(const Account& acc);
     void clear_editor();
     void do_browse_open(char* buf, size_t n);
@@ -141,9 +178,9 @@ private:
     void regenerate_password();
 
     // Helpers
-    std::vector<const Account*> filtered_accounts() const;
     int  pw_strength(const char* pw) const;
     const char* strength_label(int s) const;
+    ImVec4 strength_color(int s) const;
     float strength_frac(int s)  const { return (s + 1) / 5.0f; }
 };
 

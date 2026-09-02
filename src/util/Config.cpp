@@ -87,9 +87,14 @@ std::string Config::get_theme() const {
 }
 
 std::string Config::get_font_id() const {
-    if (data_.contains("font_id") && data_["font_id"].is_string())
-        return data_["font_id"];
-    return "default";
+    if (data_.contains("font_id") && data_["font_id"].is_string()) {
+        std::string id = data_["font_id"];
+        // Older builds stored "default" for the built-in bitmap face and used
+        // it as the default. That value is migrated to the proportional
+        // default; choosing the pixel font today stores "builtin" and sticks.
+        if (id != "default") return id;
+    }
+    return "roboto";
 }
 
 void Config::set_font_id(const std::string& id) {
@@ -100,7 +105,7 @@ void Config::set_font_id(const std::string& id) {
 int Config::get_font_size() const {
     if (data_.contains("font_size") && data_["font_size"].is_number_integer())
         return data_["font_size"];
-    return 15;
+    return 16;
 }
 
 void Config::set_font_size(int size) {
