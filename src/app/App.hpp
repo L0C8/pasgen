@@ -58,6 +58,18 @@ private:
     // --- Main ---
     std::unique_ptr<Database> db_;
     char search_[256]   = {};
+    // Archived accounts stay in the database but are hidden from the list
+    // until this is on, so retiring an account never means deleting its history.
+    bool show_archived_ = false;
+
+    // ── Idle auto-lock and clipboard hygiene ─────────────────────────────────
+    // The realistic threat to an open vault is not cryptanalysis, it is an
+    // unattended machine and a secret left sitting on the clipboard.
+    float idle_s_        = 0.0f;   // seconds since the last input event
+    int   autolock_min_  = 5;      // 0 = never
+    float clip_left_     = 0.0f;   // countdown until the clipboard is wiped
+    int   clip_clear_s_  = 30;     // 0 = never
+    std::string clip_copy_;        // what we put there, to avoid wiping someone else's copy
     std::string sel_id_;  // selected account id
     std::string status_;
     bool status_err_ = false;
@@ -65,14 +77,25 @@ private:
     bool focus_name_ = false;  // set to focus name field on next frame
 
     // Edit form (mirrors selected account, updated in real-time)
-    char ef_name_[256]  = {};
-    char ef_email_[256] = {};
-    char ef_user_[256]  = {};
-    char ef_url_[512]   = {};
-    char ef_pass_[256]  = {};
+    // std::string rather than fixed buffers: these are written straight back to
+    // the Account, so any cap here silently truncates the stored value.
+    std::string ef_name_;
+    std::string ef_email_;
+    std::string ef_user_;
+    std::string ef_url_;
+    std::string ef_pass_;
     bool ef_showp_      = false;
-    char ef_totp_[256]  = {};
-    char ef_notes_[4096] = {};
+    std::string ef_totp_;
+
+    // Mirror of the account's custom fields while editing. Held here rather
+    // than read straight off the Account so a half-typed row is not written
+    // through on every keystroke.
+    struct EditorCustomField { std::string name; std::string value; bool secret = false; };
+    std::vector<EditorCustomField> ef_custom_;
+    std::string cf_new_name_;
+    std::string cf_new_value_;
+    bool        cf_new_secret_ = false;
+    std::string ef_notes_;
 
     // Password generator popup (settings come from Preferences; this popup
     // just previews/regenerates and applies to the selected account)
@@ -158,6 +181,14 @@ private:
     // Content height used this frame, measured from inside the open card.
     float measure_card_content() const;
     // Label-above-input row; returns true when edited.
+    // Commit-on-finish variant of field(): true only when editing ends, not on
+    // every keystroke. Detail-pane fields must use this — see the definition.
+    bool field_commit(const char* label, const char* id, char* buf, size_t n,
+                      float width, ImGuiInputTextFlags flags = 0, const char* hint = nullptr);
+    bool field(const char* label, const char* id, std::string& buf,
+               float width, ImGuiInputTextFlags flags = 0, const char* hint = nullptr);
+    bool field_commit(const char* label, const char* id, std::string& buf,
+                      float width, ImGuiInputTextFlags flags = 0, const char* hint = nullptr);
     bool field(const char* label, const char* id, char* buf, size_t n,
                 float width, ImGuiInputTextFlags flags = 0, const char* hint = nullptr);
 
@@ -169,7 +200,10 @@ private:
     void do_add_account();
     void do_delete_selected();
     void do_select_account(const std::string& id);
+    void do_lock(const char* reason);
+    void tick_security(float dt);
     void load_account_to_editor(const Account& acc);
+    void sync_custom_fields(const Account& acc);
     void clear_editor();
     void do_browse_open(char* buf, size_t n);
     void do_browse_save(char* buf, size_t n);

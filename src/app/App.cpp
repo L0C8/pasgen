@@ -6,6 +6,7 @@
 #include "util/Theme.hpp"
 #include "util/Widgets.hpp"
 #include "imgui.h"
+#include "imgui_stdlib.h"
 #include "portable-file-dialogs.h"
 #include <SDL.h>
 #include <algorithm>
@@ -23,6 +24,14 @@ namespace pasgen {
 namespace ui_ = ui;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// Zeroes a std::string's buffer before releasing it. A plain clear() leaves the
+// characters sitting in the freed allocation.
+static void secure_clear_string(std::string& s) {
+    if (!s.empty()) SecureMemory::secure_zero(&s[0], s.size());
+    s.clear();
+    s.shrink_to_fit();
+}
 
 static void safe_copy(char* dst, size_t n, const std::string& src) {
     std::strncpy(dst, src.c_str(), n - 1);
@@ -51,6 +60,8 @@ App::App() {
     prefs_theme_ = theme_from_string(Config::instance().get_theme());
     font_id_     = Config::instance().get_font_id();
     font_size_   = Config::instance().get_font_size();
+    autolock_min_ = Config::instance().get_autolock_minutes();
+    clip_clear_s_ = Config::instance().get_clipboard_clear_seconds();
     load_generator_defaults();
 }
 
@@ -58,9 +69,10 @@ App::~App() {
     SecureMemory::secure_zero(lpw_,     sizeof(lpw_));
     SecureMemory::secure_zero(cpw_,     sizeof(cpw_));
     SecureMemory::secure_zero(ccon_,    sizeof(ccon_));
-    SecureMemory::secure_zero(ef_pass_, sizeof(ef_pass_));
+    secure_clear_string(ef_pass_);
     SecureMemory::secure_zero(chg_pw_,  sizeof(chg_pw_));
     SecureMemory::secure_zero(chg_con_, sizeof(chg_con_));
+    secure_clear_string(clip_copy_);
 }
 
 bool App::consume_font_dirty() {
@@ -92,11 +104,14 @@ void App::request_quit() {
 }
 
 void App::render(int w, int h) {
-    status_t_ -= ImGui::GetIO().DeltaTime;
+    const float dt = ImGui::GetIO().DeltaTime;
+    status_t_ -= dt;
+    tick_security(dt);
 
     if (screen_ == Screen::MAIN && db_) {
         auto& io = ImGui::GetIO();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) do_save();
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_L)) do_lock("Locked.");
     }
 
     switch (screen_) {
@@ -145,6 +160,31 @@ bool App::field(const char* label, const char* id, char* buf, size_t n,
     ImGui::SetNextItemWidth(width);
     if (hint) return ImGui::InputTextWithHint(id, hint, buf, n, flags);
     return ImGui::InputText(id, buf, n, flags);
+}
+
+// Returns true only once the user has finished editing (focus left, or Enter),
+// never mid-typing. The detail pane writes straight through to the Account, and
+// Account::set_password archives the previous value into a 10-entry history --
+// so a per-keystroke write turns every character typed into a separate history
+// entry and destroys the real ones. Commit-on-finish is what makes that safe.
+bool App::field(const char* label, const char* id, std::string& buf,
+                float width, ImGuiInputTextFlags flags, const char* hint) {
+    ui_::FieldLabel(label);
+    ImGui::SetNextItemWidth(width);
+    if (hint) return ImGui::InputTextWithHint(id, hint, &buf, flags);
+    return ImGui::InputText(id, &buf, flags);
+}
+
+bool App::field_commit(const char* label, const char* id, std::string& buf,
+                       float width, ImGuiInputTextFlags flags, const char* hint) {
+    field(label, id, buf, width, flags, hint);
+    return ImGui::IsItemDeactivatedAfterEdit();
+}
+
+bool App::field_commit(const char* label, const char* id, char* buf, size_t n,
+                       float width, ImGuiInputTextFlags flags, const char* hint) {
+    field(label, id, buf, n, width, flags, hint);
+    return ImGui::IsItemDeactivatedAfterEdit();
 }
 
 // ── LOGIN ────────────────────────────────────────────────────────────────────
@@ -433,8 +473,14 @@ void App::render_toolbar() {
     // Search, right-aligned on the same row. SameLine() first: without it the
     // cursor has already wrapped and setting X alone leaves the box a row down.
     const float search_w = 260.0f;
+    const float arch_w   = 110.0f;
     ImGui::SameLine(0, sp);
-    float x = ImGui::GetWindowContentRegionMax().x - search_w;
+    float x = ImGui::GetWindowContentRegionMax().x - search_w - arch_w - sp;
+    if (x > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(x);
+    ImGui::AlignTextToFramePadding();
+    ImGui::Checkbox("Show archived", &show_archived_);
+    ImGui::SameLine(0, sp);
+    x = ImGui::GetWindowContentRegionMax().x - search_w;
     if (x > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(x);
     ImGui::SetNextItemWidth(search_w);
     ImGui::InputTextWithHint("##search", "Search accounts...", search_, sizeof(search_));
@@ -488,8 +534,18 @@ void App::render_category_section(const std::string& category_id, const std::str
 
     std::vector<const Account*> shown;
     shown.reserve(accts.size());
-    for (Account* a : accts)
+    for (Account* a : accts) {
+        if (a->archived() && !show_archived_) continue;
         if (!searching || a->matches_search(query)) shown.push_back(a);
+    }
+    // Favourites float to the top. stable_sort, so the user's manual drag
+    // ordering still decides the sequence within each group.
+    std::stable_sort(shown.begin(), shown.end(),
+                     [](const Account* a, const Account* b) {
+                         return a->favorite() && !b->favorite();
+                     });
+    // Only hide an empty section while searching. Outside search an empty
+    // category must stay visible, or there is nothing to drag accounts onto.
     if (searching && shown.empty()) return;
 
     ImGui::PushID(category_id.empty() ? "##uncategorized" : category_id.c_str());
@@ -647,7 +703,17 @@ void App::render_account_detail(float width) {
     (void)width;
 
     // ── Header ──
-    ui_::Heading("%s", ef_name_[0] ? ef_name_ : "(unnamed)");
+    ui_::Heading("%s", ef_name_.empty() ? "(unnamed)" : ef_name_.c_str());
+
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8);
+    {
+        bool fav = acc->favorite();
+        if (ImGui::Checkbox("Favorite", &fav)) { acc->set_favorite(fav); db_->mark_dirty(); }
+        ImGui::SameLine(0, 10);
+        bool arch = acc->archived();
+        if (ImGui::Checkbox("Archived", &arch)) { acc->set_archived(arch); db_->mark_dirty(); }
+    }
     ui_::Caption("Created %s   -   Modified %s",
                  fmt_time(acc->created_at()).c_str(),
                  fmt_time(acc->modified_at()).c_str());
@@ -657,21 +723,21 @@ void App::render_account_detail(float width) {
     ui_::SectionHeader("Account");
 
     if (focus_name_) { ImGui::SetKeyboardFocusHere(); focus_name_ = false; }
-    if (field("NAME", "##name", ef_name_, sizeof(ef_name_), fw)) {
+    if (field_commit("NAME", "##name", ef_name_, fw)) {
         acc->set_name(ef_name_); db_->mark_dirty();
     }
-    if (field("EMAIL", "##email", ef_email_, sizeof(ef_email_), fw)) {
+    if (field_commit("EMAIL", "##email", ef_email_, fw)) {
         acc->set_email(ef_email_); db_->mark_dirty();
     }
 
     const float copy_w = 62.0f;
-    if (field("USERNAME", "##user", ef_user_, sizeof(ef_user_), fw - copy_w - sp)) {
+    if (field_commit("USERNAME", "##user", ef_user_, fw - copy_w - sp)) {
         acc->set_username(ef_user_); db_->mark_dirty();
     }
     ImGui::SameLine(0, sp);
-    if (ui_::SecondaryButton("Copy##cu", {copy_w, 0})) clipboard(ef_user_);
+    if (ui_::SecondaryButton("Copy##cu", {copy_w, 0})) clipboard(ef_user_.c_str());
 
-    if (field("URL", "##url", ef_url_, sizeof(ef_url_), fw)) {
+    if (field_commit("URL", "##url", ef_url_, fw)) {
         acc->set_url(ef_url_); db_->mark_dirty();
     }
 
@@ -687,31 +753,44 @@ void App::render_account_detail(float width) {
     ui_::FieldLabel("PASSWORD");
     ImGui::SetNextItemWidth(fw - (act_w * 2 + gen_w + sp * 3));
     if (fonts().mono) ImGui::PushFont(fonts().mono);
-    bool pw_changed = ImGui::InputText("##pass", ef_pass_, sizeof(ef_pass_), pf);
+    ImGui::InputText("##pass", &ef_pass_, pf);
+    const bool pw_committed = ImGui::IsItemDeactivatedAfterEdit();
     if (fonts().mono) ImGui::PopFont();
-    if (pw_changed) { acc->set_password(SecureString(ef_pass_)); db_->mark_dirty(); }
+    if (pw_committed) { acc->set_password(SecureString(ef_pass_.c_str(), ef_pass_.size())); db_->mark_dirty(); }
 
     ImGui::SameLine(0, sp);
     if (ui_::SecondaryButton(ef_showp_ ? "Hide" : "Show", {act_w, 0})) ef_showp_ = !ef_showp_;
     ImGui::SameLine(0, sp);
-    if (ui_::SecondaryButton("Copy##cp", {act_w, 0})) clipboard(ef_pass_);
+    if (ui_::SecondaryButton("Copy##cp", {act_w, 0})) clipboard(ef_pass_.c_str());
     ImGui::SameLine(0, sp);
     if (ui_::SecondaryButton("Generate", {gen_w, 0})) { gen_open_ = true; gen_regen_ = true; }
 
-    if (ef_pass_[0]) {
+    {
+        // Age comes from password_changed_at, not modified_at: editing any other
+        // field must not make a stale password look freshly rotated.
+        const int age = acc->password_age_days();
+        if (age >= 180)
+            ui_::Caption("Password last changed %d days ago - consider rotating it.", age);
+        else if (age > 0)
+            ui_::Caption("Password last changed %d days ago.", age);
+        else
+            ui_::Caption("Password changed today.");
+    }
+
+    if (!ef_pass_.empty()) {
         ImGui::Dummy({0, 2});
-        int s = pw_strength(ef_pass_);
+        int s = pw_strength(ef_pass_.c_str());
         ui_::StrengthMeter(strength_frac(s), strength_color(s), strength_label(s), fw * 0.45f);
     }
 
     ImGui::Dummy({0, 6});
 
-    if (field("TOTP SECRET", "##totp", ef_totp_, sizeof(ef_totp_), fw, 0,
+    if (field_commit("TOTP SECRET", "##totp", ef_totp_, fw, 0,
               "Base32 secret (optional)")) {
         acc->set_totp_secret(ef_totp_); db_->mark_dirty();
     }
 
-    if (ef_totp_[0]) {
+    if (!ef_totp_.empty()) {
         ImGui::Dummy({0, 4});
         try {
             std::string code = TOTPGenerator::generate(ef_totp_);
@@ -741,11 +820,81 @@ void App::render_account_detail(float width) {
 
     ui_::Divider(10);
 
+    // ── Custom fields ──
+    ui_::Divider(10);
+    ui_::SectionHeader("Custom Fields");
+
+    {
+        const float del_w  = 28.0f;
+        const float cpy_w  = 54.0f;
+        const float chk_w  = 78.0f;
+        const float name_w = (fw - del_w - cpy_w - chk_w - sp * 4) * 0.36f;
+        const float val_w  = (fw - del_w - cpy_w - chk_w - sp * 4) - name_w;
+
+        int remove_at = -1;
+        for (size_t i = 0; i < ef_custom_.size(); ++i) {
+            EditorCustomField& f = ef_custom_[i];
+            ImGui::PushID((int)i);
+
+            ImGui::SetNextItemWidth(name_w);
+            ImGui::InputTextWithHint("##cfn", "Name", &f.name);
+            bool commit = ImGui::IsItemDeactivatedAfterEdit();
+
+            ImGui::SameLine(0, sp);
+            ImGui::SetNextItemWidth(val_w);
+            ImGui::InputTextWithHint("##cfv", "Value", &f.value,
+                                     f.secret ? ImGuiInputTextFlags_Password : 0);
+            commit = commit || ImGui::IsItemDeactivatedAfterEdit();
+
+            ImGui::SameLine(0, sp);
+            if (ImGui::Checkbox("Secret", &f.secret)) commit = true;
+
+            ImGui::SameLine(0, sp);
+            if (ui_::TinyButton("Copy")) clipboard(f.value.c_str());
+
+            ImGui::SameLine(0, sp);
+            if (ui_::TinyButton("X")) remove_at = (int)i;
+
+            if (commit) {
+                acc->set_custom_field(i, f.name,
+                                      SecureString(f.value.c_str(), f.value.size()), f.secret);
+                db_->mark_dirty();
+            }
+            ImGui::PopID();
+        }
+        if (remove_at >= 0) {
+            acc->remove_custom_field((size_t)remove_at);
+            db_->mark_dirty();
+            sync_custom_fields(*acc);
+        }
+
+        ImGui::SetNextItemWidth(name_w);
+        ImGui::InputTextWithHint("##cfnn", "New field", &cf_new_name_);
+        ImGui::SameLine(0, sp);
+        ImGui::SetNextItemWidth(val_w);
+        ImGui::InputTextWithHint("##cfnv", "Value", &cf_new_value_,
+                                 cf_new_secret_ ? ImGuiInputTextFlags_Password : 0);
+        ImGui::SameLine(0, sp);
+        ImGui::Checkbox("Secret##new", &cf_new_secret_);
+        ImGui::SameLine(0, sp);
+        ImGui::BeginDisabled(cf_new_name_.empty());
+        if (ui_::TinyButton("+ Add")) {
+            acc->add_custom_field(cf_new_name_,
+                                  SecureString(cf_new_value_.c_str(), cf_new_value_.size()),
+                                  cf_new_secret_);
+            db_->mark_dirty();
+            secure_clear_string(cf_new_name_);
+            secure_clear_string(cf_new_value_);
+            cf_new_secret_ = false;
+            sync_custom_fields(*acc);
+        }
+        ImGui::EndDisabled();
+    }
+
     // ── Notes ──
     ui_::SectionHeader("Notes");
-    if (ImGui::InputTextMultiline("##notes", ef_notes_, sizeof(ef_notes_), {fw, 110})) {
-        acc->set_notes(ef_notes_); db_->mark_dirty();
-    }
+    ImGui::InputTextMultiline("##notes", &ef_notes_, {fw, 110});
+    if (ImGui::IsItemDeactivatedAfterEdit()) { acc->set_notes(ef_notes_); db_->mark_dirty(); }
 
     // ── History ──
     const auto& hist = acc->password_history();
@@ -753,8 +902,9 @@ void App::render_account_detail(float width) {
         ui_::Divider(10);
         ui_::SectionHeader("Password History");
         for (const auto& e : hist) {
+            // Fully masked: revealing the leading character of every historic
+            // password hands an attacker a free character per entry.
             std::string masked(e.password.size(), '*');
-            if (masked.size() > 3) masked.replace(0, 1, 1, e.password.c_str()[0]);
             if (fonts().mono) ImGui::PushFont(fonts().mono);
             ImGui::PushStyleColor(ImGuiCol_Text, palette().text_dim);
             ImGui::TextUnformatted(masked.c_str());
@@ -831,9 +981,9 @@ void App::render_gen_popup() {
         ImGui::SameLine(0, sp);
         if (ui_::PrimaryButton("Use Password", {third, 38})) {
             if (gen_prev_[0] && !sel_id_.empty()) {
-                safe_copy(ef_pass_, sizeof(ef_pass_), std::string(gen_prev_));
+                ef_pass_ = gen_prev_;
                 if (Account* acc = db_->get_account(sel_id_)) {
-                    acc->set_password(SecureString(ef_pass_));
+                    acc->set_password(SecureString(ef_pass_.c_str(), ef_pass_.size()));
                     db_->mark_dirty();
                 }
                 set_status("Password applied.");
@@ -987,6 +1137,29 @@ void App::render_prefs_popup() {
             Config::instance().set_font_size(font_size_);
             font_dirty_ = true;
         }
+
+        ui_::Divider(10);
+
+        // ── Security ──
+        ui_::SectionHeader("Security");
+
+        ui_::Dimmed("Auto-lock");
+        ImGui::SameLine(lbl_x);
+        ImGui::SetNextItemWidth(ctl_w);
+        ImGui::SliderInt("##autolock", &autolock_min_, 0, 60,
+                         autolock_min_ == 0 ? "Never" : "%d min");
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            Config::instance().set_autolock_minutes(autolock_min_);
+
+        ui_::Dimmed("Clear clipboard");
+        ImGui::SameLine(lbl_x);
+        ImGui::SetNextItemWidth(ctl_w);
+        ImGui::SliderInt("##clipclear", &clip_clear_s_, 0, 300,
+                         clip_clear_s_ == 0 ? "Never" : "%d s");
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            Config::instance().set_clipboard_clear_seconds(clip_clear_s_);
+
+        ui_::Caption("Auto-lock relocks the vault after inactivity (Ctrl+L locks now).");
 
         ui_::Divider(10);
 
@@ -1279,29 +1452,42 @@ void App::do_select_account(const std::string& id) {
     if (const Account* acc = db_->get_account(id)) load_account_to_editor(*acc);
 }
 
+void App::sync_custom_fields(const Account& acc) {
+    for (auto& f : ef_custom_) { secure_clear_string(f.name); secure_clear_string(f.value); }
+    ef_custom_.clear();
+    for (const auto& f : acc.custom_fields())
+        ef_custom_.push_back({f.name, std::string(f.value.c_str(), f.value.size()), f.secret});
+}
+
 void App::load_account_to_editor(const Account& acc) {
-    safe_copy(ef_name_,  sizeof(ef_name_),  acc.name());
-    safe_copy(ef_email_, sizeof(ef_email_), acc.email());
-    safe_copy(ef_user_,  sizeof(ef_user_),  acc.username());
-    safe_copy(ef_url_,   sizeof(ef_url_),   acc.url());
-    safe_copy(ef_totp_,  sizeof(ef_totp_),  acc.totp_secret());
-    safe_copy(ef_notes_, sizeof(ef_notes_), acc.notes());
+    sync_custom_fields(acc);
+    ef_name_  = acc.name();
+    ef_email_ = acc.email();
+    ef_user_  = acc.username();
+    ef_url_   = acc.url();
+    ef_totp_  = acc.totp_secret();
+    ef_notes_ = acc.notes();
 
     const auto& pw = acc.password();
-    size_t len = std::min(pw.size(), sizeof(ef_pass_) - 1);
-    std::memcpy(ef_pass_, pw.c_str(), len);
-    ef_pass_[len] = '\0';
+    ef_pass_.assign(pw.c_str(), pw.size());
     ef_showp_ = false;
 }
 
 void App::clear_editor() {
-    SecureMemory::secure_zero(ef_pass_, sizeof(ef_pass_));
-    std::memset(ef_name_,  0, sizeof(ef_name_));
-    std::memset(ef_email_, 0, sizeof(ef_email_));
-    std::memset(ef_user_,  0, sizeof(ef_user_));
-    std::memset(ef_url_,   0, sizeof(ef_url_));
-    std::memset(ef_totp_,  0, sizeof(ef_totp_));
-    std::memset(ef_notes_, 0, sizeof(ef_notes_));
+    // Every editor field is wiped, not just the password: the TOTP secret is
+    // password-equivalent, and notes routinely hold recovery codes.
+    secure_clear_string(ef_pass_);
+    secure_clear_string(ef_name_);
+    secure_clear_string(ef_email_);
+    secure_clear_string(ef_user_);
+    secure_clear_string(ef_url_);
+    secure_clear_string(ef_totp_);
+    secure_clear_string(ef_notes_);
+    for (auto& f : ef_custom_) { secure_clear_string(f.name); secure_clear_string(f.value); }
+    ef_custom_.clear();
+    secure_clear_string(cf_new_name_);
+    secure_clear_string(cf_new_value_);
+    cf_new_secret_ = false;
     ef_showp_ = false;
 }
 
@@ -1324,7 +1510,67 @@ void App::do_browse_save(char* buf, size_t n) {
 
 void App::clipboard(const char* text) {
     SDL_SetClipboardText(text);
-    set_status("Copied to clipboard.");
+    if (clip_clear_s_ > 0) {
+        clip_copy_  = text ? text : "";
+        clip_left_  = (float)clip_clear_s_;
+        set_status("Copied - clipboard clears in " + std::to_string(clip_clear_s_) + "s.");
+    } else {
+        set_status("Copied to clipboard.");
+    }
+}
+
+// Relocks the vault: the Database destructor wipes the master password and
+// every decrypted account, and the editor buffers are zeroed separately.
+void App::do_lock(const char* reason) {
+    if (!db_) return;
+    // Persist first -- losing edits to an idle timer would be worse than the
+    // brief extra write, and the file is encrypted either way.
+    if (db_->is_dirty()) { try { db_->save(); } catch (...) {} }
+
+    const std::string path = db_->file_path();
+    clear_editor();
+    sel_id_.clear();
+    db_.reset();
+    screen_ = Screen::LOGIN;
+    safe_copy(lp_, sizeof(lp_), path);
+    SecureMemory::secure_zero(lpw_, sizeof(lpw_));
+    lerr_.clear();
+    set_status(reason);
+}
+
+void App::tick_security(float dt) {
+    // Clipboard: only wipe if the contents are still ours, so a later copy by
+    // the user (or another app) is never clobbered.
+    if (clip_left_ > 0.0f) {
+        clip_left_ -= dt;
+        if (clip_left_ <= 0.0f) {
+            char* cur = SDL_GetClipboardText();
+            if (cur && clip_copy_ == cur) {
+                SDL_SetClipboardText("");
+                set_status("Clipboard cleared.");
+            }
+            if (cur) SDL_free(cur);
+            secure_clear_string(clip_copy_);
+            clip_left_ = 0.0f;
+        }
+    }
+
+    if (screen_ != Screen::MAIN || !db_ || autolock_min_ <= 0) { idle_s_ = 0.0f; return; }
+
+    ImGuiIO& io = ImGui::GetIO();
+    bool active = io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f ||
+                  io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f ||
+                  io.InputQueueCharacters.Size > 0;
+    for (int b = 0; !active && b < IM_ARRAYSIZE(io.MouseDown); ++b)
+        if (io.MouseDown[b]) active = true;
+    for (int k = ImGuiKey_NamedKey_BEGIN; !active && k < ImGuiKey_NamedKey_END; ++k)
+        if (ImGui::IsKeyDown((ImGuiKey)k)) active = true;
+
+    idle_s_ = active ? 0.0f : idle_s_ + dt;
+    if (idle_s_ >= (float)autolock_min_ * 60.0f) {
+        idle_s_ = 0.0f;
+        do_lock("Locked after inactivity.");
+    }
 }
 
 void App::set_status(const std::string& msg, bool err) {

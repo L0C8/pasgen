@@ -68,10 +68,14 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    # std::string-backed InputText, so text fields are not capped by a fixed
+    # char buffer (a too-small buffer silently truncated stored passwords/notes).
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/cpp
 )
 if(TARGET SDL2::SDL2)
     target_link_libraries(imgui_lib PUBLIC SDL2::SDL2)

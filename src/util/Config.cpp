@@ -118,6 +118,28 @@ void Config::set_theme(const std::string& theme) {
     save();
 }
 
+int Config::get_autolock_minutes() const {
+    if (data_.contains("autolock_minutes") && data_["autolock_minutes"].is_number_integer())
+        return data_["autolock_minutes"].get<int>();
+    return 5;
+}
+
+void Config::set_autolock_minutes(int minutes) {
+    data_["autolock_minutes"] = minutes;
+    save();
+}
+
+int Config::get_clipboard_clear_seconds() const {
+    if (data_.contains("clipboard_clear_seconds") && data_["clipboard_clear_seconds"].is_number_integer())
+        return data_["clipboard_clear_seconds"].get<int>();
+    return 30;
+}
+
+void Config::set_clipboard_clear_seconds(int seconds) {
+    data_["clipboard_clear_seconds"] = seconds;
+    save();
+}
+
 PasswordGenDefaults Config::get_password_gen_defaults() const {
     PasswordGenDefaults d;
     if (data_.contains("password_gen") && data_["password_gen"].is_object()) {

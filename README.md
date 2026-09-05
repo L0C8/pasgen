@@ -1,14 +1,16 @@
 # Pasgen
 
-A secure, cross-platform password manager. Stores credentials in an AES-256-GCM encrypted `.pif` database file using Argon2id key derivation (with PBKDF2-SHA256 fallback). Features TOTP (2FA), password generation, and password history.
+A secure, cross-platform password manager. Stores credentials in a `.pif` database file encrypted twice over (ChaCha20-Poly1305 then AES-256-GCM) using auto-calibrated Argon2id key derivation. Features TOTP (2FA), password generation, and password history.
 
 ## Features
 
-- AES-256-GCM encrypted database with authenticated header
-- Argon2id key derivation (falls back to PBKDF2-SHA256 if Argon2 not available)
+- Two-layer cipher cascade (ChaCha20-Poly1305 then AES-256-GCM) with a fully authenticated header
+- Argon2id key derivation, auto-calibrated to the machine (PBKDF2-SHA256 fallback, recorded in the header)
 - TOTP / authenticator app support (live code display with countdown timer)
 - Secure password generator — random or passphrase mode
 - Password history (last 10 passwords per account)
+- Categories, custom user-defined fields, favourites and archiving
+- Idle auto-lock and automatic clipboard clearing
 - Cross-platform: Linux, macOS, Windows
 - Zero GTK/Qt dependency — ImGui + SDL2 UI
 
@@ -100,7 +102,7 @@ Prefer this only if you want to drive the build yourself — `install.sh` /
 | C++17 compiler | GCC 9+, Clang 9+, MSVC 2019+ |
 | OpenSSL 1.1.1+ | `libssl-dev` / `openssl@3` / vcpkg |
 | SDL2 | Optional — fetched automatically if not found |
-| Argon2 | Optional — PBKDF2 fallback used if not found |
+| Argon2 | Not needed with OpenSSL 3.2+ (built in); `libargon2` used on older OpenSSL |
 
 ### Linux (Debian/Ubuntu)
 ```bash
@@ -143,23 +145,88 @@ cmake --build build -j4
 
 ## Database Format
 
-Pasgen uses the `.pif` binary format (compatible with pasgen-classic):
+Pasgen uses the `.pif` binary format, **version 3**:
 
 ```
 [4]  Magic: "PIF\0"
-[2]  Version: 0x0001
-[2]  Flags (reserved)
+[2]  Version: 0x0003
+[2]  Flags (reserved, authenticated)
+[2]  KDF id      (1 = Argon2id, 2 = PBKDF2-SHA256)
+[2]  Cipher id   (2 = ChaCha20-Poly1305 -> AES-256-GCM cascade)
 [32] Salt (random, per-database)
 [4]  Argon2 memory_kb
 [4]  Argon2 iterations
 [4]  Argon2 parallelism
-[12] AES-GCM IV (random, per-save)
+[4]  PBKDF2 iterations
+[12] Outer AES-GCM IV        (random, per-save)
+[12] Inner ChaCha20 nonce    (random, per-save)
 [4]  Encrypted payload length
-[N]  AES-256-GCM ciphertext (JSON)
-[16] GCM authentication tag
+[N]  Ciphertext
+[16] Outer authentication tag
 ```
 
-The header bytes (magic → parallelism) are included as AAD in the GCM tag, so any modification to the header will be detected.
+**The entire 88-byte header is the GCM AAD**, passed verbatim rather than
+reconstructed, so every field above — version, reserved flags, KDF id, cipher
+id and payload length — is covered by the authentication tag.
+
+The KDF parameters and the payload length are validated against sane bounds
+*before* being used, so a tampered header cannot request a multi-gigabyte
+allocation or an absurd Argon2 memory cost.
+
+### Cipher cascade
+
+The payload is encrypted **twice, under two independent subkeys**:
+
+```
+plaintext
+   |  ChaCha20-Poly1305   (key K1, inner nonce)
+   v
+inner ciphertext + inner tag
+   |  AES-256-GCM         (key K2, outer IV)
+   v
+stored ciphertext + outer tag
+```
+
+The outer layer encrypts the inner ciphertext *and* its tag, so nothing about
+the inner result is observable without first breaking AES-256-GCM. Recovering
+the plaintext requires breaking **both** primitives — a future weakness in
+either one alone does not expose the vault.
+
+`K1` and `K2` are derived by HKDF-SHA512 from the Argon2id output under distinct
+domain-separation labels, so neither cipher ever sees the master key and the two
+keys are independent.
+
+### Key derivation
+
+Argon2id, **auto-calibrated on database creation** to roughly 750 ms on the
+machine that creates it, capped at 512 MiB so the database stays openable on
+more modest hardware. The chosen parameters are stored in the header, so a
+faster machine produces a proportionally more expensive database to attack.
+
+On a modern laptop this calibrates to **512 MiB / t=3 / p=8**, making each
+password guess cost about **0.9 seconds** — and the 512 MiB memory cost is what
+denies an attacker cheap GPU parallelism.
+
+Argon2id comes from OpenSSL 3.2+ where available and falls back to `libargon2`
+on older OpenSSL; the two produce byte-identical output, so databases stay
+portable between builds. If neither is present the build uses PBKDF2-SHA256, and
+because the KDF id is recorded in the header, a mismatch is reported plainly
+instead of masquerading as a wrong password.
+
+The derived key is cached while the database is unlocked, so saving does not
+re-run the KDF.
+
+### Operational hardening
+
+Strong ciphers do not help if the vault is left open. Pasgen also:
+
+- **Auto-locks after inactivity** (default 5 minutes, configurable in
+  Preferences, `Ctrl+L` to lock immediately). Locking saves any pending change,
+  then releases the master password and every decrypted account from memory.
+- **Clears the clipboard** a configurable interval after a copy (default 30 s),
+  and only if the contents are still the ones Pasgen put there.
+- Writes saves to a temporary file and renames, so an interrupted save cannot
+  leave a half-written vault.
 
 ---
 

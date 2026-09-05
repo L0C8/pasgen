@@ -42,9 +42,21 @@ PasswordHistoryEntry PasswordHistoryEntry::from_json(const nlohmann::json& j) {
     return e;
 }
 
+nlohmann::json CustomField::to_json() const {
+    return {{"name", name}, {"value", std::string(value.c_str())}, {"secret", secret}};
+}
+
+CustomField CustomField::from_json(const nlohmann::json& j) {
+    CustomField f;
+    if (j.contains("name"))   f.name   = j["name"].get<std::string>();
+    if (j.contains("value"))  f.value  = SecureString(j["value"].get<std::string>());
+    if (j.contains("secret")) f.secret = j["secret"].get<bool>();
+    return f;
+}
+
 Account::Account() {
     id_ = generate_uuid();
-    created_at_ = modified_at_ = std::chrono::system_clock::now();
+    created_at_ = modified_at_ = password_changed_at_ = std::chrono::system_clock::now();
 }
 
 Account::Account(const nlohmann::json& j) { *this = from_json(j); }
@@ -57,10 +69,45 @@ void Account::set_notes(const std::string& v) { notes_ = v;  touch(); }
 void Account::set_totp_secret(const std::string& v) { totp_secret_ = v; touch(); }
 void Account::set_category_id(const std::string& v) { category_id_ = v; touch(); }
 void Account::set_order(int v) { order_ = v; touch(); }
+void Account::set_favorite(bool v) { favorite_ = v; touch(); }
+void Account::set_archived(bool v) { archived_ = v; touch(); }
 
 void Account::set_password(const SecureString& password) {
+    // Writing back an unchanged value must not touch the history. Without this
+    // guard a caller that writes on every edit would churn the 10-entry history
+    // into prefixes of whatever is being typed, destroying the real entries.
+    if (password == password_) return;
     archive_password();
     password_ = password;
+    password_changed_at_ = std::chrono::system_clock::now();
+    touch();
+}
+
+int Account::password_age_days() const {
+    auto delta = std::chrono::system_clock::now() - password_changed_at_;
+    auto days  = std::chrono::duration_cast<std::chrono::hours>(delta).count() / 24;
+    return days < 0 ? 0 : static_cast<int>(days);
+}
+
+void Account::add_custom_field(const std::string& name, const SecureString& value, bool secret) {
+    CustomField f;
+    f.name = name; f.value = value; f.secret = secret;
+    custom_fields_.push_back(std::move(f));
+    touch();
+}
+
+void Account::set_custom_field(size_t index, const std::string& name,
+                               const SecureString& value, bool secret) {
+    if (index >= custom_fields_.size()) return;
+    CustomField& f = custom_fields_[index];
+    if (f.name == name && f.value == value && f.secret == secret) return;
+    f.name = name; f.value = value; f.secret = secret;
+    touch();
+}
+
+void Account::remove_custom_field(size_t index) {
+    if (index >= custom_fields_.size()) return;
+    custom_fields_.erase(custom_fields_.begin() + static_cast<std::ptrdiff_t>(index));
     touch();
 }
 
@@ -78,6 +125,13 @@ nlohmann::json Account::to_json() const {
     j["modified_at"] = time_to_string(modified_at_);
     j["category_id"] = category_id_;
     j["order"]        = order_;
+    j["favorite"]    = favorite_;
+    j["archived"]    = archived_;
+    j["password_changed_at"] = time_to_string(password_changed_at_);
+
+    nlohmann::json cfs = nlohmann::json::array();
+    for (const auto& f : custom_fields_) cfs.push_back(f.to_json());
+    j["custom_fields"] = cfs;
 
     nlohmann::json hist = nlohmann::json::array();
     for (const auto& e : password_history_) {
@@ -104,6 +158,18 @@ Account Account::from_json(const nlohmann::json& j) {
     if (j.contains("modified_at")) a.modified_at_ = string_to_time(j["modified_at"].get<std::string>());
     if (j.contains("category_id")) a.category_id_ = j["category_id"].get<std::string>();
     if (j.contains("order"))       a.order_       = j["order"].get<int>();
+    if (j.contains("favorite"))    a.favorite_    = j["favorite"].get<bool>();
+    if (j.contains("archived"))    a.archived_    = j["archived"].get<bool>();
+    // Databases written before this field existed fall back to created_at, so
+    // password age stays meaningful rather than reading as "changed just now".
+    a.password_changed_at_ = j.contains("password_changed_at")
+        ? string_to_time(j["password_changed_at"].get<std::string>())
+        : a.created_at_;
+
+    if (j.contains("custom_fields") && j["custom_fields"].is_array()) {
+        for (const auto& fj : j["custom_fields"])
+            a.custom_fields_.push_back(CustomField::from_json(fj));
+    }
 
     if (j.contains("password_history") && j["password_history"].is_array()) {
         for (const auto& ej : j["password_history"]) {
@@ -125,7 +191,15 @@ bool Account::matches_search(const std::string& query) const {
         std::transform(ls.begin(), ls.end(), ls.begin(), ::tolower);
         return ls.find(lq) != std::string::npos;
     };
-    return has(name_) || has(email_) || has(url_) || has(username_) || has(notes_);
+    if (has(name_) || has(email_) || has(url_) || has(username_) || has(notes_))
+        return true;
+    for (const auto& f : custom_fields_) {
+        // Names are searchable; values only when the user did not mark them
+        // secret, so a search can never surface a hidden value.
+        if (has(f.name)) return true;
+        if (!f.secret && has(std::string(f.value.c_str()))) return true;
+    }
+    return false;
 }
 
 void Account::touch()            { modified_at_ = std::chrono::system_clock::now(); }

@@ -34,7 +34,13 @@ struct DatabaseMetadata {
 class Database {
 public:
     static constexpr uint32_t MAGIC   = 0x00464950;
-    static constexpr uint16_t VERSION = 0x0001;
+    // v2: authenticated header (AAD is the verbatim header block),
+    // explicit KDF id, and reserved flags for future cascade/keyfile use.
+    static constexpr uint16_t VERSION = 0x0003;
+
+    // Which cipher construction protects the payload.
+    static constexpr uint16_t CIPHER_AES_GCM  = 1; // single layer (pre-v3)
+    static constexpr uint16_t CIPHER_CASCADE  = 2; // ChaCha20-Poly1305 then AES-256-GCM
 
     Database();
     ~Database();
@@ -88,7 +94,13 @@ private:
     std::vector<Category> categories_;
     bool is_dirty_ = false;
     std::vector<uint8_t> salt_;
+    SecureBytes key_cache_;
+    bool key_cached_ = false;
     CryptoEngine crypto_;
+
+    // Derives the master key on first use and caches it until the password or
+    // salt changes; see the definition for why.
+    const SecureBytes& session_key();
 
     void load_from_file(const std::string& path);
     void write_to_file(const std::string& path);

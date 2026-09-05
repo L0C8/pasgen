@@ -16,6 +16,18 @@ struct PasswordHistoryEntry {
     static PasswordHistoryEntry from_json(const nlohmann::json& j);
 };
 
+// A user-named extra field. `secret` fields are masked in the UI and get the
+// same show/copy affordances as the password, so the value is a SecureString
+// regardless of whether the user marked it secret.
+struct CustomField {
+    std::string name;
+    SecureString value;
+    bool secret = false;
+
+    nlohmann::json to_json() const;
+    static CustomField from_json(const nlohmann::json& j);
+};
+
 class Account {
 public:
     Account();
@@ -30,10 +42,17 @@ public:
     const std::string& notes() const    { return notes_; }
     const std::string& totp_secret() const { return totp_secret_; }
     const std::vector<PasswordHistoryEntry>& password_history() const { return password_history_; }
+    const std::vector<CustomField>& custom_fields() const { return custom_fields_; }
     std::chrono::system_clock::time_point created_at() const  { return created_at_; }
     std::chrono::system_clock::time_point modified_at() const { return modified_at_; }
+    // Distinct from modified_at_, which any edit bumps. This is what "password
+    // age" is measured from.
+    std::chrono::system_clock::time_point password_changed_at() const { return password_changed_at_; }
+    int password_age_days() const;
     const std::string& category_id() const { return category_id_; }
     int order() const { return order_; }
+    bool favorite() const { return favorite_; }
+    bool archived() const { return archived_; }
 
     void set_name(const std::string& name);
     void set_email(const std::string& email);
@@ -44,6 +63,12 @@ public:
     void set_totp_secret(const std::string& secret);
     void set_category_id(const std::string& category_id);
     void set_order(int order);
+    void set_favorite(bool favorite);
+    void set_archived(bool archived);
+
+    void add_custom_field(const std::string& name, const SecureString& value, bool secret);
+    void set_custom_field(size_t index, const std::string& name, const SecureString& value, bool secret);
+    void remove_custom_field(size_t index);
 
     nlohmann::json to_json() const;
     static Account from_json(const nlohmann::json& j);
@@ -60,10 +85,14 @@ private:
     std::string notes_;
     std::string totp_secret_;
     std::vector<PasswordHistoryEntry> password_history_;
+    std::vector<CustomField> custom_fields_;
     std::chrono::system_clock::time_point created_at_;
     std::chrono::system_clock::time_point modified_at_;
+    std::chrono::system_clock::time_point password_changed_at_;
     std::string category_id_;
     int order_ = 0;
+    bool favorite_ = false;
+    bool archived_ = false;
 
     void touch();
     void archive_password();
