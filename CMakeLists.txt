@@ -68,10 +68,14 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    # std::string-backed InputText, so text fields are not capped by a fixed
+    # char buffer (a too-small buffer silently truncated stored passwords/notes).
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/cpp
 )
 if(TARGET SDL2::SDL2)
     target_link_libraries(imgui_lib PUBLIC SDL2::SDL2)
@@ -141,6 +145,7 @@ set(PASGEN_SOURCES
     src/app/App.cpp
     src/core/Database.cpp
     src/core/Account.cpp
+    src/core/Category.cpp
     src/crypto/CryptoEngine.cpp
     src/crypto/KeyDerivation.cpp
     src/crypto/SecureMemory.cpp
@@ -149,6 +154,8 @@ set(PASGEN_SOURCES
     src/util/Config.cpp
     src/util/Theme.cpp
     src/util/Font.cpp
+    src/util/Widgets.cpp
+    src/util/Uuid.cpp
 )
 
 add_executable(pasgen ${PASGEN_SOURCES})

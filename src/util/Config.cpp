@@ -87,9 +87,14 @@ std::string Config::get_theme() const {
 }
 
 std::string Config::get_font_id() const {
-    if (data_.contains("font_id") && data_["font_id"].is_string())
-        return data_["font_id"];
-    return "default";
+    if (data_.contains("font_id") && data_["font_id"].is_string()) {
+        std::string id = data_["font_id"];
+        // Older builds stored "default" for the built-in bitmap face and used
+        // it as the default. That value is migrated to the proportional
+        // default; choosing the pixel font today stores "builtin" and sticks.
+        if (id != "default") return id;
+    }
+    return "roboto";
 }
 
 void Config::set_font_id(const std::string& id) {
@@ -100,7 +105,7 @@ void Config::set_font_id(const std::string& id) {
 int Config::get_font_size() const {
     if (data_.contains("font_size") && data_["font_size"].is_number_integer())
         return data_["font_size"];
-    return 15;
+    return 16;
 }
 
 void Config::set_font_size(int size) {
@@ -110,6 +115,28 @@ void Config::set_font_size(int size) {
 
 void Config::set_theme(const std::string& theme) {
     data_["theme"] = theme;
+    save();
+}
+
+int Config::get_autolock_minutes() const {
+    if (data_.contains("autolock_minutes") && data_["autolock_minutes"].is_number_integer())
+        return data_["autolock_minutes"].get<int>();
+    return 5;
+}
+
+void Config::set_autolock_minutes(int minutes) {
+    data_["autolock_minutes"] = minutes;
+    save();
+}
+
+int Config::get_clipboard_clear_seconds() const {
+    if (data_.contains("clipboard_clear_seconds") && data_["clipboard_clear_seconds"].is_number_integer())
+        return data_["clipboard_clear_seconds"].get<int>();
+    return 30;
+}
+
+void Config::set_clipboard_clear_seconds(int seconds) {
+    data_["clipboard_clear_seconds"] = seconds;
     save();
 }
 
