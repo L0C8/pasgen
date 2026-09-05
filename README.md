@@ -14,37 +14,83 @@ A secure, cross-platform password manager. Stores credentials in an AES-256-GCM 
 
 ---
 
-## Download
+## Install
 
-| Platform | Download | Installer |
-|----------|----------|-----------|
-| **Linux x64** | [pasgen-linux-x64.tar.gz](https://github.com/YOUR_GITHUB_USERNAME/pasgen/releases/latest/download/pasgen-linux-x64.tar.gz) | `install-linux.sh` |
-| **macOS (Apple Silicon)** | [pasgen-macos-arm64.tar.gz](https://github.com/YOUR_GITHUB_USERNAME/pasgen/releases/latest/download/pasgen-macos-arm64.tar.gz) | `install-mac.sh` |
-| **macOS (Intel)** | [pasgen-macos-x64.tar.gz](https://github.com/YOUR_GITHUB_USERNAME/pasgen/releases/latest/download/pasgen-macos-x64.tar.gz) | `install-mac.sh` |
-| **Windows x64** | [pasgen-windows-x64.zip](https://github.com/YOUR_GITHUB_USERNAME/pasgen/releases/latest/download/pasgen-windows-x64.zip) | `install-windows.bat` |
+Pasgen builds from source. One script per platform installs any missing
+dependencies, compiles the project, and installs the binary — nothing to set up
+by hand.
 
-> **Note:** Replace `YOUR_GITHUB_USERNAME` above with your actual GitHub username after pushing this repo.
+```bash
+git clone https://github.com/L0C8/pasgen.git
+cd pasgen
+```
+
+| Platform | Install | Update |
+|----------|---------|--------|
+| **Linux** | `./install.sh` | `./update.sh` |
+| **macOS** | `./install.sh` | `./update.sh` |
+| **Windows** | `install.bat` (or `.\install.ps1`) | `update.bat` (or `.\update.ps1`) |
+
+The installer detects what is already present and installs only what is
+missing, so re-running it is cheap and safe.
+
+- **Linux** — uses apt, dnf, pacman, zypper or apk, whichever the system has.
+  Installs a C++ toolchain, CMake, pkg-config, Git, and the OpenSSL, SDL2,
+  Argon2 and OpenGL development packages.
+- **macOS** — installs the Xcode Command Line Tools and Homebrew if absent,
+  then `cmake`, `openssl@3`, `sdl2` and `argon2`.
+- **Windows** — installs Git, CMake and the MSVC C++ build tools through
+  `winget`, then bootstraps vcpkg and builds OpenSSL, SDL2 and Argon2.
+
+### Options
+
+| Flag (Unix) | Flag (Windows) | Effect |
+|-------------|----------------|--------|
+| `--check` | `-Check` | Report dependency status and exit; change nothing |
+| `--prefix DIR` | `-Prefix DIR` | Install somewhere else (default `/usr/local`, `%LOCALAPPDATA%\Programs\Pasgen`) |
+| `--no-deps` | `-NoDeps` | Skip dependency installation entirely |
+| `--clean` | `-Clean` | Delete the build tree before building |
+| `--jobs N` | `-Jobs N` | Override the parallel build job count |
+
+To install without root on Linux or macOS:
+
+```bash
+./install.sh --prefix "$HOME/.local"
+```
 
 ---
 
-## Quick Install
+## Updating
 
-### Linux
 ```bash
-bash install-linux.sh
+./update.sh          # Linux / macOS
+update.bat           # Windows
 ```
 
-### macOS
+The updater fast-forwards the checkout, then hands off to the installer, which
+re-checks every dependency before rebuilding. Because the hand-off happens
+*after* the pull, a dependency introduced by the commits just pulled is
+installed on the same run.
+
 ```bash
-bash install-mac.sh
+./update.sh --check   # show what is available, change nothing
+./update.sh --force   # rebuild and reinstall even if already current
 ```
 
-### Windows
-Double-click `install-windows.bat` or run from Command Prompt.
+The updater refuses to act on a detached HEAD, on a branch with no upstream, or
+when local commits have diverged from the remote — it fast-forwards only and
+will never discard your work.
+
+> Prebuilt release binaries are not published yet, so the installers always
+> build from source. The first build downloads ImGui, nlohmann/json and
+> portable-file-dialogs, so it needs an internet connection.
 
 ---
 
-## Build from Source
+## Manual Build
+
+Prefer this only if you want to drive the build yourself — `install.sh` /
+`install.bat` above do all of it for you.
 
 ### Requirements
 
@@ -58,7 +104,8 @@ Double-click `install-windows.bat` or run from Command Prompt.
 
 ### Linux (Debian/Ubuntu)
 ```bash
-sudo apt install build-essential cmake libssl-dev libsdl2-dev libargon2-dev
+sudo apt install build-essential cmake pkg-config \
+    libssl-dev libsdl2-dev libargon2-dev libgl1-mesa-dev
 cd pasgen
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
@@ -67,7 +114,7 @@ cmake --build build -j$(nproc)
 
 ### macOS
 ```bash
-brew install cmake openssl@3 sdl2 argon2
+brew install cmake pkg-config openssl@3 sdl2 argon2
 cd pasgen
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(sysctl -n hw.ncpu)
@@ -127,4 +174,3 @@ The header bytes (magic → parallelism) are included as AAD in the GCM tag, so 
 ### TOTP Setup
 
 Paste the Base32 secret from your authenticator app's QR code setup screen into the **TOTP** field. The current 6-digit code and countdown timer are shown automatically.
-# pasgen
