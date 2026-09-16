@@ -240,6 +240,7 @@ void App::render_login(int w, int h) {
         SecureMemory::secure_zero(cpw_,  sizeof(cpw_));
         SecureMemory::secure_zero(ccon_, sizeof(ccon_));
         cshow_ = false; cerr_.clear();
+        create_level_ = Database::EncryptionLevel::Standard;
     }
 
     login_card_h_ = measure_card_content();
@@ -310,6 +311,28 @@ void App::render_create_db(int w, int h) {
         else       ui_::Pill("Passwords do not match", p.danger);
     }
 
+    ImGui::Dummy({0, 12});
+    ui_::FieldLabel("ENCRYPTION LEVEL");
+    {
+        // Three-cell segmented control, same pattern as the theme toggle in
+        // Preferences: the active cell is the accent-filled button.
+        using Level = Database::EncryptionLevel;
+        const float third = (inner - 2 * sp) / 3.0f;
+        auto cell = [&](const char* label, Level level) {
+            bool active = create_level_ == level;
+            bool clicked = active ? ui_::PrimaryButton(label, {third, 0})
+                                  : ui_::SecondaryButton(label, {third, 0});
+            if (clicked) create_level_ = level;
+        };
+        cell("Standard",      Level::Standard);
+        ImGui::SameLine(0, sp);
+        cell("High Security", Level::HighSecurity);
+        ImGui::SameLine(0, sp);
+        cell("Fast",          Level::FastCompatible);
+    }
+    ImGui::Dummy({0, 4});
+    ui_::Dimmed("%s", Database::encryption_level_description(create_level_));
+
     if (!cerr_.empty()) {
         ImGui::Dummy({0, 6});
         ui_::Banner(cerr_.c_str(), p.danger);
@@ -343,7 +366,7 @@ void App::do_create_db() {
             path += ".pif";
 
         SecureString pw(cpw_);
-        db_ = Database::create(path, pw);
+        db_ = Database::create(path, pw, create_level_);
         safe_copy(lp_, sizeof(lp_), path);
         Config::instance().set_last_database_path(path);
         SecureMemory::secure_zero(cpw_,  sizeof(cpw_));
@@ -399,6 +422,7 @@ void App::render_main(int w, int h) {
 
     render_gen_popup();
     render_chgpw_popup();
+    render_enc_level_popup();
     render_prefs_popup();
     render_delete_confirm_popup();
     render_quit_confirm_popup();
@@ -420,6 +444,7 @@ void App::render_menu_bar() {
                 SecureMemory::secure_zero(cpw_,  sizeof(cpw_));
                 SecureMemory::secure_zero(ccon_, sizeof(ccon_));
                 cp_[0] = '\0'; cshow_ = false; cerr_.clear();
+                create_level_ = Database::EncryptionLevel::Standard;
             }
             if (ImGui::MenuItem("Open Database")) {
                 char path[512] = {};
@@ -434,6 +459,11 @@ void App::render_menu_bar() {
             if (ImGui::MenuItem("Save", "Ctrl+S", false, db_ && db_->is_dirty())) do_save();
             if (ImGui::MenuItem("Save As...", nullptr, false, db_ != nullptr)) do_save_as();
             if (ImGui::MenuItem("Change Master Password")) chg_open_ = true;
+            if (ImGui::MenuItem("Change Encryption Level...", nullptr, false, db_ != nullptr)) {
+                enc_level_pick_ = Database::EncryptionLevel::Standard;
+                enc_level_err_.clear();
+                enc_level_open_ = true;
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) request_quit();
             ImGui::EndMenu();
@@ -1062,6 +1092,74 @@ void App::render_chgpw_popup() {
             }
         }
         if (!ok) ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+}
+
+// ── CHANGE ENCRYPTION LEVEL ──────────────────────────────────────────────────
+
+void App::render_enc_level_popup() {
+    if (enc_level_open_) { ImGui::OpenPopup("##enclevel"); enc_level_open_ = false; }
+
+    ImGui::SetNextWindowSize({460, 0}, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
+    if (ImGui::BeginPopupModal("##enclevel", nullptr,
+                               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+        const Palette& p = palette();
+        ui_::Heading("Change Encryption Level");
+        ui_::Caption("The vault is re-encrypted and saved immediately.");
+        ImGui::Dummy({0, 10});
+
+        if (db_) {
+            ui_::Dimmed("Currently: %s - %s",
+                       db_->current_cipher_name().c_str(), db_->current_kdf_description().c_str());
+            ImGui::Dummy({0, 10});
+        }
+
+        float w  = ImGui::GetContentRegionAvail().x;
+        float sp = ImGui::GetStyle().ItemSpacing.x;
+
+        using Level = Database::EncryptionLevel;
+        const float third = (w - 2 * sp) / 3.0f;
+        auto cell = [&](const char* label, Level level) {
+            bool active = enc_level_pick_ == level;
+            bool clicked = active ? ui_::PrimaryButton(label, {third, 0})
+                                  : ui_::SecondaryButton(label, {third, 0});
+            if (clicked) enc_level_pick_ = level;
+        };
+        cell("Standard",      Level::Standard);
+        ImGui::SameLine(0, sp);
+        cell("High Security", Level::HighSecurity);
+        ImGui::SameLine(0, sp);
+        cell("Fast",          Level::FastCompatible);
+
+        ImGui::Dummy({0, 6});
+        ui_::Dimmed("%s", Database::encryption_level_description(enc_level_pick_));
+
+        if (!enc_level_err_.empty()) {
+            ImGui::Dummy({0, 8});
+            ui_::Banner(enc_level_err_.c_str(), p.danger);
+        }
+
+        ImGui::Dummy({0, 14});
+        float half = (w - sp) * 0.5f;
+        if (ui_::SecondaryButton("Cancel", {half, 38})) ImGui::CloseCurrentPopup();
+        ImGui::SameLine(0, sp);
+        if (ui_::PrimaryButton("Apply", {half, 38})) {
+            try {
+                // Deriving the new key (Argon2id, up to ~512 MiB for High
+                // Security) blocks the UI thread for up to a second or two,
+                // same as opening/creating a vault does today.
+                db_->change_encryption_level(enc_level_pick_);
+                db_->save();
+                set_status("Encryption level changed and saved.");
+                ImGui::CloseCurrentPopup();
+            } catch (const std::exception& e) {
+                enc_level_err_ = e.what();
+            }
+        }
         ImGui::EndPopup();
     }
     ImGui::PopStyleVar();

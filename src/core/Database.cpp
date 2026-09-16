@@ -108,16 +108,14 @@ std::unique_ptr<Database> Database::open(const std::string& path, const SecureSt
     return db;
 }
 
-std::unique_ptr<Database> Database::create(const std::string& path, const SecureString& pw) {
+std::unique_ptr<Database> Database::create(const std::string& path, const SecureString& pw,
+                                            EncryptionLevel level) {
     auto db = std::make_unique<Database>();
     db->master_password_ = pw;
     db->file_path_ = path;
     db->salt_ = db->crypto_.generate_salt();
     db->key_cached_ = false;
-    // Tune the work factor to this machine so a faster CPU yields a
-    // proportionally more expensive database to attack, instead of everyone
-    // sharing one conservative hardcoded cost.
-    db->metadata_.argon2_params = KeyDerivation::benchmark(std::chrono::milliseconds(750));
+    db->apply_encryption_level(level);
     db->metadata_.name = "New Database";
     db->is_dirty_ = true;
     db->save();
@@ -126,6 +124,63 @@ std::unique_ptr<Database> Database::create(const std::string& path, const Secure
 
 void Database::save()                       { if (file_path_.empty()) throw DatabaseException("No file path"); write_to_file(file_path_); is_dirty_ = false; }
 void Database::save_as(const std::string& p) { file_path_ = p; save(); }
+
+const char* Database::encryption_level_name(EncryptionLevel level) {
+    switch (level) {
+        case EncryptionLevel::Standard:       return "Standard";
+        case EncryptionLevel::HighSecurity:   return "High Security";
+        case EncryptionLevel::FastCompatible: return "Fast / Compatible";
+    }
+    return "Unknown";
+}
+
+const char* Database::encryption_level_description(EncryptionLevel level) {
+    switch (level) {
+        case EncryptionLevel::Standard:
+            return "Double-layer cipher (ChaCha20-Poly1305 + AES-256-GCM). "
+                   "Argon2id cost is tuned to this machine. Recommended for most people.";
+        case EncryptionLevel::HighSecurity:
+            return "Same double-layer cipher, with Argon2id pushed to a fixed, much higher "
+                   "cost. Opening the vault takes noticeably longer on every device.";
+        case EncryptionLevel::FastCompatible:
+            return "Single-layer AES-256-GCM with a lighter Argon2id cost, for older or "
+                   "memory-constrained machines. Still a modern, secure cipher.";
+    }
+    return "";
+}
+
+void Database::apply_encryption_level(EncryptionLevel level) {
+    switch (level) {
+        case EncryptionLevel::Standard:
+            cipher_id_ = CIPHER_CASCADE;
+            // Tune the work factor to this machine so a faster CPU yields a
+            // proportionally more expensive database to attack, instead of
+            // everyone sharing one conservative hardcoded cost.
+            metadata_.argon2_params = KeyDerivation::benchmark(std::chrono::milliseconds(750));
+            break;
+        case EncryptionLevel::HighSecurity:
+            cipher_id_ = CIPHER_CASCADE;
+            metadata_.argon2_params = KDFParams::high_security();
+            break;
+        case EncryptionLevel::FastCompatible:
+            cipher_id_ = CIPHER_AES_GCM;
+            metadata_.argon2_params = KDFParams::low_memory();
+            break;
+    }
+}
+
+void Database::change_encryption_level(EncryptionLevel level) {
+    apply_encryption_level(level);
+    // The cached key was derived under the old cost parameters.
+    key_cached_ = false;
+    is_dirty_ = true;
+}
+
+std::string Database::current_cipher_name() const {
+    if (cipher_id_ == CIPHER_CASCADE) return "Cascade (ChaCha20-Poly1305 + AES-256-GCM)";
+    if (cipher_id_ == CIPHER_AES_GCM) return "AES-256-GCM";
+    return "Unknown";
+}
 
 void Database::change_master_password(const SecureString& pw) {
     master_password_ = pw;
@@ -269,6 +324,29 @@ void Database::load_from_file(const std::string& path) {
     f.seekg(0, std::ios::end);
     const std::streamoff file_size = f.tellg();
     f.seekg(0, std::ios::beg);
+    if (file_size < 6) throw DatabaseException("Truncated or corrupted file");
+
+    // Peek at magic + version to decide which layout the rest of the file
+    // follows, then rewind: each loader below re-reads its header from
+    // scratch (the v3 one needs it as one opaque, verbatim-AAD block).
+    uint8_t peek[6];
+    f.read((char*)peek, sizeof(peek));
+    if (!f) throw DatabaseException("Truncated or corrupted file");
+    f.seekg(0, std::ios::beg);
+
+    const uint32_t magic = (uint32_t)peek[0] | ((uint32_t)peek[1] << 8) |
+                            ((uint32_t)peek[2] << 16) | ((uint32_t)peek[3] << 24);
+    if (magic != MAGIC) throw DatabaseException("Not a pasgen database");
+
+    const uint16_t ver = (uint16_t)peek[4] | ((uint16_t)peek[5] << 8);
+    if (ver == VERSION)            { load_v3(f, file_size); return; }
+    if (ver == VERSION_LEGACY_V1)  { load_legacy_v1(f, file_size); return; }
+    throw DatabaseException(
+        "Unsupported database version " + std::to_string(ver) +
+        " (this build writes version " + std::to_string(VERSION) + ")");
+}
+
+void Database::load_v3(std::ifstream& f, std::streamoff file_size) {
     if (file_size < (std::streamoff)(HEADER_SIZE + CryptoEngine::TAG_SIZE))
         throw DatabaseException("Truncated or corrupted file");
 
@@ -279,22 +357,14 @@ void Database::load_from_file(const std::string& path) {
     f.read((char*)header.data(), HEADER_SIZE);
     if (!f) throw DatabaseException("Truncated or corrupted file");
 
-    if (get_le<uint32_t>(header, OFF_MAGIC) != MAGIC)
-        throw DatabaseException("Not a pasgen database");
-
-    const uint16_t ver = get_le<uint16_t>(header, OFF_VERSION);
-    if (ver != VERSION)
-        throw DatabaseException(
-            "Unsupported database version " + std::to_string(ver) +
-            " (this build writes version " + std::to_string(VERSION) + ")");
-
     const uint16_t kdf_raw = get_le<uint16_t>(header, OFF_KDF);
     if (kdf_raw != (uint16_t)KdfId::Argon2id && kdf_raw != (uint16_t)KdfId::Pbkdf2Sha256)
         throw DatabaseException("Unknown key-derivation id " + std::to_string(kdf_raw));
 
     const uint16_t cipher_id = get_le<uint16_t>(header, OFF_CIPHER);
-    if (cipher_id != CIPHER_CASCADE)
+    if (cipher_id != CIPHER_CASCADE && cipher_id != CIPHER_AES_GCM)
         throw DatabaseException("Unsupported cipher id " + std::to_string(cipher_id));
+    cipher_id_ = cipher_id;
 
     salt_.assign(header.begin() + OFF_SALT,
                  header.begin() + OFF_SALT + CryptoEngine::SALT_SIZE);
@@ -337,13 +407,96 @@ void Database::load_from_file(const std::string& path) {
     const SecureBytes& key = session_key();
 
     std::vector<uint8_t> plain;
-    try { plain = crypto_.decrypt_cascade(enc, key, iv, nonce, tag, header); }
+    try {
+        plain = (cipher_id_ == CIPHER_CASCADE)
+            ? crypto_.decrypt_cascade(enc, key, iv, nonce, tag, header)
+            : crypto_.decrypt_with_iv(enc, key, iv, tag, header); // CIPHER_AES_GCM; nonce field is unused
+    }
     catch (const CryptoException& e) { throw DatabaseException("Decrypt failed: " + std::string(e.what())); }
 
     try { from_json(nlohmann::json::parse(std::string(plain.begin(), plain.end()))); }
     catch (const nlohmann::json::exception& e) { throw DatabaseException("Parse failed: " + std::string(e.what())); }
 
     SecureMemory::secure_zero(plain.data(), plain.size());
+}
+
+void Database::load_legacy_v1(std::ifstream& f, std::streamoff file_size) {
+    // Fixed prefix before the ciphertext: magic(4) version(2) flags(2)
+    // salt(32) mem(4) iter(4) par(4) iv(12) enc_len(4) = 68 bytes. There is
+    // no KDF id (this format only ever used Argon2id) and no cipher id
+    // (always single-layer AES-256-GCM).
+    constexpr std::streamoff V1_PREFIX = 68;
+    if (file_size < V1_PREFIX + (std::streamoff)CryptoEngine::TAG_SIZE)
+        throw DatabaseException("Truncated or corrupted file");
+
+    read_le<uint32_t>(f); // magic, already checked by the caller
+    read_le<uint16_t>(f); // version, already checked by the caller
+    read_le<uint16_t>(f); // flags, unused in this format
+
+    salt_.resize(CryptoEngine::SALT_SIZE);
+    f.read((char*)salt_.data(), salt_.size());
+
+    metadata_.argon2_params.kdf         = KdfId::Argon2id;
+    metadata_.argon2_params.memory_kb   = read_le<uint32_t>(f);
+    metadata_.argon2_params.iterations  = read_le<uint32_t>(f);
+    metadata_.argon2_params.parallelism = read_le<uint32_t>(f);
+    if (!f) throw DatabaseException("Truncated or corrupted file");
+    // Same untrusted-header caution as the v3 loader: reject implausible
+    // values rather than clamp them.
+    if (!metadata_.argon2_params.valid())
+        throw DatabaseException("Refusing file: implausible KDF parameters (" +
+                                 metadata_.argon2_params.describe() + ")");
+    if (!KeyDerivation::argon2_available())
+        throw DatabaseException(
+            "This database uses Argon2id, but this build has no Argon2 support.");
+
+    std::vector<uint8_t> iv(CryptoEngine::IV_SIZE);
+    f.read((char*)iv.data(), iv.size());
+
+    const uint32_t enc_len = read_le<uint32_t>(f);
+    if (!f) throw DatabaseException("Truncated or corrupted file");
+    if ((std::streamoff)enc_len != file_size - V1_PREFIX - (std::streamoff)CryptoEngine::TAG_SIZE)
+        throw DatabaseException("Truncated or corrupted file (payload length mismatch)");
+
+    std::vector<uint8_t> enc(enc_len);
+    f.read((char*)enc.data(), enc_len);
+
+    std::vector<uint8_t> tag(CryptoEngine::TAG_SIZE);
+    f.read((char*)tag.data(), tag.size());
+    if (!f) throw DatabaseException("Truncated or corrupted file");
+
+    // v1 authenticated a hand-assembled summary of the header rather than the
+    // header bytes themselves. Reproduce that exact layout byte-for-byte —
+    // any deviation here and every legacy vault fails to authenticate.
+    std::vector<uint8_t> aad;
+    aad.reserve(52);
+    for (int i = 0; i < 4; i++) aad.push_back((uint8_t)((MAGIC >> (8 * i)) & 0xFF));
+    aad.push_back((uint8_t)(VERSION_LEGACY_V1 & 0xFF));
+    aad.push_back((uint8_t)((VERSION_LEGACY_V1 >> 8) & 0xFF));
+    aad.push_back(0); aad.push_back(0); // flags
+    aad.insert(aad.end(), salt_.begin(), salt_.end());
+    for (int i = 0; i < 4; i++) aad.push_back((uint8_t)((metadata_.argon2_params.memory_kb   >> (8 * i)) & 0xFF));
+    for (int i = 0; i < 4; i++) aad.push_back((uint8_t)((metadata_.argon2_params.iterations  >> (8 * i)) & 0xFF));
+    for (int i = 0; i < 4; i++) aad.push_back((uint8_t)((metadata_.argon2_params.parallelism >> (8 * i)) & 0xFF));
+
+    const SecureBytes& key = session_key();
+
+    std::vector<uint8_t> plain;
+    try { plain = crypto_.decrypt_with_iv(enc, key, iv, tag, aad); }
+    catch (const CryptoException& e) { throw DatabaseException("Decrypt failed: " + std::string(e.what())); }
+
+    try { from_json(nlohmann::json::parse(std::string(plain.begin(), plain.end()))); }
+    catch (const nlohmann::json::exception& e) { throw DatabaseException("Parse failed: " + std::string(e.what())); }
+
+    SecureMemory::secure_zero(plain.data(), plain.size());
+
+    // This format was always single-layer AES-256-GCM; carry that forward so
+    // a plain save() preserves the cipher the vault already had rather than
+    // silently changing it — only the binary envelope (this v1 layout) is
+    // forced to upgrade to the current header format, since write_to_file()
+    // no longer knows how to write the old one. Call change_encryption_level()
+    // to move to the cascade cipher as well.
+    cipher_id_ = CIPHER_AES_GCM;
 }
 
 void Database::write_to_file(const std::string& path) {
@@ -356,30 +509,34 @@ void Database::write_to_file(const std::string& path) {
     const SecureBytes& key = session_key();
     const KDFParams& kp = metadata_.argon2_params;
 
-    // GCM ciphertext is the same length as the plaintext, so the length field
-    // is known before encrypting and can be authenticated along with the rest
-    // of the header.
+    // GCM ciphertext is the same length as the plaintext (cascade adds
+    // exactly one inner tag on top), so the length field is known before
+    // encrypting and can be authenticated along with the rest of the header.
+    const uint32_t declared_len = (cipher_id_ == CIPHER_CASCADE)
+        ? (uint32_t)(plain.size() + CryptoEngine::TAG_SIZE)
+        : (uint32_t)plain.size();
+
     std::vector<uint8_t> header;
     header.reserve(HEADER_SIZE);
     put_le<uint32_t>(header, MAGIC);
     put_le<uint16_t>(header, VERSION);
     put_le<uint16_t>(header, 0);                       // flags, reserved
     put_le<uint16_t>(header, (uint16_t)kp.kdf);
-    put_le<uint16_t>(header, CIPHER_CASCADE);
+    put_le<uint16_t>(header, cipher_id_);
     header.insert(header.end(), salt_.begin(), salt_.end());
     put_le<uint32_t>(header, kp.memory_kb);
     put_le<uint32_t>(header, kp.iterations);
     put_le<uint32_t>(header, kp.parallelism);
     put_le<uint32_t>(header, kp.pbkdf2_iterations);
     header.insert(header.end(), iv.begin(), iv.end());
-    header.insert(header.end(), nonce.begin(), nonce.end());
-    // The outer layer encrypts the inner ciphertext *and* the inner tag, so the
-    // stored payload is one tag longer than the plaintext.
-    put_le<uint32_t>(header, (uint32_t)(plain.size() + CryptoEngine::TAG_SIZE));
+    header.insert(header.end(), nonce.begin(), nonce.end()); // unused, but still authenticated, when single-layer
+    put_le<uint32_t>(header, declared_len);
     if (header.size() != HEADER_SIZE)
         throw DatabaseException("Internal error: malformed header");
 
-    std::vector<uint8_t> enc = crypto_.encrypt_cascade(plain, key, iv, nonce, header);
+    std::vector<uint8_t> enc = (cipher_id_ == CIPHER_CASCADE)
+        ? crypto_.encrypt_cascade(plain, key, iv, nonce, header)
+        : crypto_.encrypt_with_iv(plain, key, iv, header);
     SecureMemory::secure_zero(plain.data(), plain.size());
 
     std::vector<uint8_t> ct(enc.begin(), enc.end() - CryptoEngine::TAG_SIZE);

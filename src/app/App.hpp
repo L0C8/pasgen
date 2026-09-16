@@ -54,6 +54,7 @@ private:
     char ccon_[256] = {};
     bool cshow_     = false;
     std::string cerr_;
+    Database::EncryptionLevel create_level_ = Database::EncryptionLevel::Standard;
 
     // --- Main ---
     std::unique_ptr<Database> db_;
@@ -118,6 +119,11 @@ private:
     bool   chg_show_     = false;
     std::string chg_err_;
 
+    // Change encryption level popup
+    bool enc_level_open_ = false;
+    Database::EncryptionLevel enc_level_pick_ = Database::EncryptionLevel::Standard;
+    std::string enc_level_err_;
+
     // Preferences popup (Settings menu)
     bool  prefs_open_ = false;
     Theme prefs_theme_ = Theme::Dark;
@@ -156,6 +162,7 @@ private:
     void render_detail_placeholder(float width);
     void render_gen_popup();
     void render_chgpw_popup();
+    void render_enc_level_popup();
     void render_prefs_popup();
     void render_delete_confirm_popup();
     void render_quit_confirm_popup();
