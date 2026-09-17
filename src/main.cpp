@@ -7,6 +7,11 @@
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
 
+#define NANOSVG_IMPLEMENTATION
+#include "nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "nanosvgrast.h"
+
 #include <SDL.h>
 #ifdef _WIN32
 #include <windows.h>  // for SetProcessDPIAware
@@ -19,6 +24,50 @@
 
 #include <cstdio>
 #include <string>
+
+namespace {
+
+// Rasterizes assets/icon.svg (shipped next to the executable, same as
+// fonts/) into a window icon. Returns nullptr -- leaving SDL's default icon
+// in place -- if the file is missing or fails to parse, same fallback
+// philosophy as apply_font() with a missing font file.
+SDL_Surface* load_app_icon(const std::string& base_path, int px) {
+    if (base_path.empty()) return nullptr;
+    const std::string path = base_path + "assets/icon.svg";
+
+    NSVGimage* svg = nsvgParseFromFile(path.c_str(), "px", 96.0f);
+    if (!svg) return nullptr;
+    if (svg->width <= 0 || svg->height <= 0) {
+        nsvgDelete(svg);
+        return nullptr;
+    }
+
+    NSVGrasterizer* rast = nsvgCreateRasterizer();
+    if (!rast) {
+        nsvgDelete(svg);
+        return nullptr;
+    }
+
+    // RGBA8888, tightly packed -- matches SDL_PIXELFORMAT_RGBA32 (the
+    // memory-byte-order alias, so no endianness juggling below).
+    unsigned char* pixels = new unsigned char[(size_t)px * px * 4];
+    float scale = (float)px / svg->width;
+    nsvgRasterize(rast, svg, 0, 0, scale, pixels, px, px, px * 4);
+    nsvgDeleteRasterizer(rast);
+    nsvgDelete(svg);
+
+    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormatFrom(
+        pixels, px, px, 32, px * 4, SDL_PIXELFORMAT_RGBA32);
+    if (!surf) {
+        delete[] pixels;
+        return nullptr;
+    }
+    // Surface doesn't own `pixels`; SDL_SetWindowIcon() copies the data it
+    // needs, so the caller frees both right after using it.
+    return surf;
+}
+
+} // namespace
 
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
@@ -51,6 +100,17 @@ int main(int argc, char* argv[]) {
         std::fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
+    }
+
+    // Window/taskbar icon, rasterized from the bundled SVG. Left at SDL's
+    // default (no icon) if the file isn't found next to the executable.
+    if (char* base = SDL_GetBasePath()) {
+        if (SDL_Surface* icon = load_app_icon(base, 64)) {
+            SDL_SetWindowIcon(window, icon);
+            delete[] static_cast<unsigned char*>(icon->pixels);
+            SDL_FreeSurface(icon);
+        }
+        SDL_free(base);
     }
 
     SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
@@ -135,7 +195,9 @@ int main(int argc, char* argv[]) {
 
         ImGui::Render();
         glViewport(0, 0, display_w, display_h);
-        glClearColor(0.10f, 0.10f, 0.12f, 1.00f);
+        // Matches the active theme so resizing never flashes a foreign color.
+        ImVec4 clear = app.background_color();
+        glClearColor(clear.x, clear.y, clear.z, 1.00f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);

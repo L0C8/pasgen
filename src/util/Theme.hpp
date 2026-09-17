@@ -5,48 +5,59 @@
 
 namespace pasgen {
 
-// The "Look and Feel" is the widget skin/engine: Modern uses normal ImGui
-// widgets, Retro uses hand-drawn bevelled Win95-era widgets, and Windows XP
-// uses hand-drawn glossy "Luna" style widgets. Theme is the color variant
-// nested under whichever look and feel is active.
-enum class LookAndFeel {
-    Modern    = 0,
-    Retro     = 1,
-    WindowsXP = 2,
-};
-
+// Pasgen ships a single, deliberately-designed look in two variants. Everything
+// visual is derived from the Palette below, so the two variants stay in step and
+// nothing has to be restyled per-theme at the call site.
 enum class Theme {
-    Original   = 0,
-    Light      = 1,
-    Classic    = 2,
-    RetroWin95 = 3,
-    RetroBlue  = 4,
-    RetroWave  = 5,
-    RetroDark  = 6,
-    XPBlue     = 7,
-    XPSilver   = 8,
-    XPOlive    = 9,
+    Dark  = 0,
+    Light = 1,
 };
 
 Theme theme_from_string(const std::string& s);
 std::string theme_to_string(Theme t);
-const char* theme_label(Theme t);
 
-LookAndFeel look_and_feel_of(Theme t);
-const char* look_and_feel_label(LookAndFeel l);
-// The default/first theme belonging to a look-and-feel family (used when
-// switching families in the Preferences UI).
-Theme default_theme_for(LookAndFeel l);
+// Semantic design tokens for the active theme.
+//
+// Screens and widgets read colors from here instead of hardcoding literals:
+// a hardcoded light-gray label is invisible on the Light theme, and every such
+// literal is a place the two themes can silently drift apart.
+struct Palette {
+    // Surfaces, from furthest back to closest to the user.
+    ImVec4 bg;             // window background behind all panels
+    ImVec4 surface;        // panels and cards sitting on bg
+    ImVec4 surface_alt;    // inputs and inset wells
+    ImVec4 surface_hover;  // hover state for rows and ghost buttons
+    ImVec4 border;         // hairline separators and card outlines
+    ImVec4 border_strong;  // emphasized outlines (focus, active input)
 
-// Applies colors/style vars for the given theme to the current ImGui context.
+    // Type, in descending emphasis.
+    ImVec4 text;           // primary copy and values
+    ImVec4 text_dim;       // field labels and secondary copy
+    ImVec4 text_muted;     // hints, placeholders, disabled
+
+    // Accent, used for primary actions and selection.
+    ImVec4 accent;
+    ImVec4 accent_hover;
+    ImVec4 accent_active;
+    ImVec4 accent_soft;    // low-alpha accent for selected rows
+    ImVec4 on_accent;      // text drawn on top of an accent fill
+
+    // Status.
+    ImVec4 success;
+    ImVec4 warning;
+    ImVec4 danger;
+    ImVec4 danger_hover;
+
+    // Category swatches, cycled by position in the sidebar. Tuned per theme so
+    // they stay legible against that theme's surface color.
+    ImVec4 category[8];
+};
+
+const Palette& palette();
+Theme current_theme();
+
+// Applies the palette and all shape/spacing style vars for the given theme to
+// the current ImGui context.
 void apply_theme(Theme t);
-
-// Hand-drawn bevelled retro widgets used by the Retro look and feel.
-bool RetroButton(const char* label, ImVec2 size = ImVec2(0, 0));
-bool RetroSmallButton(const char* label);
-
-// Hand-drawn glossy "Luna" widgets used by the Windows XP look and feel.
-bool XPButton(const char* label, ImVec2 size = ImVec2(0, 0));
-bool XPSmallButton(const char* label);
 
 } // namespace pasgen

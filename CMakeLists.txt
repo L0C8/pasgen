@@ -68,10 +68,14 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    # std::string-backed InputText, so text fields are not capped by a fixed
+    # char buffer (a too-small buffer silently truncated stored passwords/notes).
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/cpp
 )
 if(TARGET SDL2::SDL2)
     target_link_libraries(imgui_lib PUBLIC SDL2::SDL2)
@@ -136,11 +140,26 @@ if(NOT pfd_POPULATED)
     FetchContent_Populate(pfd)
 endif()
 
+# Header-only SVG parser + rasterizer, used only to turn assets/icon.svg into
+# the window/taskbar icon at startup (main.cpp). Not a build dependency of
+# anything else, so Populate (no add_subdirectory) is enough.
+FetchContent_Declare(
+    nanosvg
+    GIT_REPOSITORY https://github.com/memononen/nanosvg.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(nanosvg)
+if(NOT nanosvg_POPULATED)
+    FetchContent_Populate(nanosvg)
+endif()
+
 set(PASGEN_SOURCES
     src/main.cpp
     src/app/App.cpp
     src/core/Database.cpp
     src/core/Account.cpp
+    src/core/Category.cpp
     src/crypto/CryptoEngine.cpp
     src/crypto/KeyDerivation.cpp
     src/crypto/SecureMemory.cpp
@@ -148,7 +167,10 @@ set(PASGEN_SOURCES
     src/util/PasswordGenerator.cpp
     src/util/Config.cpp
     src/util/Theme.cpp
+    src/util/Background.cpp
     src/util/Font.cpp
+    src/util/Widgets.cpp
+    src/util/Uuid.cpp
 )
 
 add_executable(pasgen ${PASGEN_SOURCES})
@@ -171,10 +193,19 @@ add_custom_command(TARGET pasgen POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PASGEN_BUNDLED_FONTS} "$<TARGET_FILE_DIR:pasgen>/fonts"
 )
 
+# App icon (assets/icon.svg), rasterized at startup by main.cpp. Copied next
+# to the executable the same way fonts/ is, so SDL_GetBasePath() finds it.
+add_custom_command(TARGET pasgen POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:pasgen>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/assets/icon.svg" "$<TARGET_FILE_DIR:pasgen>/assets"
+)
+
 target_include_directories(pasgen PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${ARGON2_INCLUDE_DIRS}
     ${pfd_SOURCE_DIR}
+    ${nanosvg_SOURCE_DIR}/src
 )
 
 target_link_libraries(pasgen PRIVATE
@@ -215,3 +246,4 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS pasgen RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES ${PASGEN_BUNDLED_FONTS} DESTINATION ${CMAKE_INSTALL_BINDIR}/fonts)
+install(FILES ${CMAKE_SOURCE_DIR}/assets/icon.svg DESTINATION ${CMAKE_INSTALL_BINDIR}/assets)

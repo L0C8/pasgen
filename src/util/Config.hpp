@@ -26,10 +26,22 @@ public:
     std::string get_theme() const;
     void set_theme(const std::string& theme);
 
+    // Animated wallpaper behind the login/create-database screens: "none"
+    // (default), "matrix", or "outrun". See util/Background.hpp.
+    std::string get_home_background() const;
+    void set_home_background(const std::string& id);
+
     std::string get_font_id() const;
     void set_font_id(const std::string& id);
     int get_font_size() const;
     void set_font_size(int size);
+
+    // Minutes of inactivity before the vault relocks; 0 disables.
+    int  get_autolock_minutes() const;
+    void set_autolock_minutes(int minutes);
+    // Seconds before a copied secret is wiped from the clipboard; 0 disables.
+    int  get_clipboard_clear_seconds() const;
+    void set_clipboard_clear_seconds(int seconds);
 
     PasswordGenDefaults get_password_gen_defaults() const;
     void set_password_gen_defaults(const PasswordGenDefaults& d);
