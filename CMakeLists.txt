@@ -140,6 +140,20 @@ if(NOT pfd_POPULATED)
     FetchContent_Populate(pfd)
 endif()
 
+# Header-only SVG parser + rasterizer, used only to turn assets/icon.svg into
+# the window/taskbar icon at startup (main.cpp). Not a build dependency of
+# anything else, so Populate (no add_subdirectory) is enough.
+FetchContent_Declare(
+    nanosvg
+    GIT_REPOSITORY https://github.com/memononen/nanosvg.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(nanosvg)
+if(NOT nanosvg_POPULATED)
+    FetchContent_Populate(nanosvg)
+endif()
+
 set(PASGEN_SOURCES
     src/main.cpp
     src/app/App.cpp
@@ -153,6 +167,7 @@ set(PASGEN_SOURCES
     src/util/PasswordGenerator.cpp
     src/util/Config.cpp
     src/util/Theme.cpp
+    src/util/Background.cpp
     src/util/Font.cpp
     src/util/Widgets.cpp
     src/util/Uuid.cpp
@@ -178,10 +193,19 @@ add_custom_command(TARGET pasgen POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PASGEN_BUNDLED_FONTS} "$<TARGET_FILE_DIR:pasgen>/fonts"
 )
 
+# App icon (assets/icon.svg), rasterized at startup by main.cpp. Copied next
+# to the executable the same way fonts/ is, so SDL_GetBasePath() finds it.
+add_custom_command(TARGET pasgen POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:pasgen>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/assets/icon.svg" "$<TARGET_FILE_DIR:pasgen>/assets"
+)
+
 target_include_directories(pasgen PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${ARGON2_INCLUDE_DIRS}
     ${pfd_SOURCE_DIR}
+    ${nanosvg_SOURCE_DIR}/src
 )
 
 target_link_libraries(pasgen PRIVATE
@@ -222,3 +246,4 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS pasgen RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES ${PASGEN_BUNDLED_FONTS} DESTINATION ${CMAKE_INSTALL_BINDIR}/fonts)
+install(FILES ${CMAKE_SOURCE_DIR}/assets/icon.svg DESTINATION ${CMAKE_INSTALL_BINDIR}/assets)

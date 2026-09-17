@@ -118,6 +118,17 @@ void Config::set_theme(const std::string& theme) {
     save();
 }
 
+std::string Config::get_home_background() const {
+    if (data_.contains("home_background") && data_["home_background"].is_string())
+        return data_["home_background"];
+    return "none";
+}
+
+void Config::set_home_background(const std::string& id) {
+    data_["home_background"] = id;
+    save();
+}
+
 int Config::get_autolock_minutes() const {
     if (data_.contains("autolock_minutes") && data_["autolock_minutes"].is_number_integer())
         return data_["autolock_minutes"].get<int>();

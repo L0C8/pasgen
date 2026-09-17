@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Pasgen app icon: a padlock, matching the in-app dark palette
+  (src/util/Theme.cpp: bg 0x0E1014, border 0x272C36, text_dim 0x9AA3B4,
+  accent 0x4C7DF0 / accent_hover 0x5F8CF7).
+
+  100x100 design grid so it scales cleanly to any raster size
+  (16/32/48/64/128/256px for .ico/.icns/.desktop use, or straight
+  as-is for a browser/README favicon).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#5F8CF7"/>
+      <stop offset="100%" stop-color="#4C7DF0"/>
+    </linearGradient>
+    <clipPath id="shackle-clip">
+      <rect x="0" y="0" width="100" height="45"/>
+    </clipPath>
+  </defs>
+
+  <!-- background panel -->
+  <rect x="4" y="4" width="92" height="92" rx="20"
+        fill="#0E1014" stroke="#272C36" stroke-width="1.2"/>
+
+  <!-- shackle: a ring (drawn as a stroked circle to avoid hand-rolled arc-path
+       math), clipped to its top half so the legs disappear behind the body
+       (drawn next). Outer r=19, inner r=11.5 -> center r=15.25, width=7.5. -->
+  <g clip-path="url(#shackle-clip)">
+    <circle cx="50" cy="45" r="15.25" fill="none" stroke="#9AA3B4" stroke-width="7.5"/>
+  </g>
+
+  <!-- body -->
+  <rect x="25" y="45" width="50" height="38" rx="9" fill="url(#body)"/>
+
+  <!-- keyhole -->
+  <circle cx="50" cy="60" r="4.6" fill="#0E1014"/>
+  <rect x="47.9" y="60" width="4.2" height="14" fill="#0E1014"/>
+</svg>

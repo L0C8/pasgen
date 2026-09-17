@@ -26,6 +26,11 @@ public:
     std::string get_theme() const;
     void set_theme(const std::string& theme);
 
+    // Animated wallpaper behind the login/create-database screens: "none"
+    // (default), "matrix", or "outrun". See util/Background.hpp.
+    std::string get_home_background() const;
+    void set_home_background(const std::string& id);
+
     std::string get_font_id() const;
     void set_font_id(const std::string& id);
     int get_font_size() const;

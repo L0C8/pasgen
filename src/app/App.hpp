@@ -4,6 +4,7 @@
 #include "core/Account.hpp"
 #include "crypto/SecureMemory.hpp"
 #include "util/Theme.hpp"
+#include "util/Background.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,6 +42,14 @@ private:
     enum class Screen { LOGIN, CREATE_DB, MAIN };
     Screen screen_ = Screen::LOGIN;
     bool wants_quit_ = false;
+
+    // File > Log Out sets this instead of calling do_lock() directly: the
+    // menu item fires from inside render_main(), and do_lock() resets db_,
+    // which the rest of that same render_main() call (sidebar, detail pane)
+    // still dereferences unconditionally. Deferring the actual lock to the
+    // top of the next render() call -- same as the Ctrl+L handler there --
+    // keeps db_ valid for the remainder of the frame that requested it.
+    bool logout_requested_ = false;
 
     // --- Login ---
     char lp_[512]  = {};  // path
@@ -130,6 +139,8 @@ private:
     std::string font_id_ = "roboto";
     int         font_size_ = 16;
     bool        font_dirty_ = false;
+    // Animated wallpaper behind the login/create-database screens.
+    HomeBackground home_bg_ = HomeBackground::None;
 
     // Delete-account confirmation popup
     bool del_confirm_open_ = false;

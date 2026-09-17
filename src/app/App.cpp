@@ -62,6 +62,7 @@ App::App() {
     font_size_   = Config::instance().get_font_size();
     autolock_min_ = Config::instance().get_autolock_minutes();
     clip_clear_s_ = Config::instance().get_clipboard_clear_seconds();
+    home_bg_      = home_background_from_string(Config::instance().get_home_background());
     load_generator_defaults();
 }
 
@@ -113,6 +114,12 @@ void App::render(int w, int h) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) do_save();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_L)) do_lock("Locked.");
     }
+    // Runs before the switch below (same reasoning as Ctrl+L above), so
+    // db_ is torn down between frames, never mid-render_main().
+    if (logout_requested_) {
+        logout_requested_ = false;
+        do_lock("Logged out.");
+    }
 
     switch (screen_) {
     case Screen::LOGIN:     render_login(w, h);     break;
@@ -130,7 +137,17 @@ void App::begin_centered_screen(int w, int h, const char* id, float card_w, floa
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, palette().bg);
+
+    // With a wallpaper chosen, this window's own fill must go transparent so
+    // the animated art -- drawn to the background draw list, i.e. beneath
+    // every ImGui window -- shows through. The opaque "##card" child below
+    // still sits on top for the actual form.
+    ImVec4 win_bg = palette().bg;
+    if (home_bg_ != HomeBackground::None) {
+        win_bg.w = 0.0f;
+        render_home_background(home_bg_, (float)w, (float)h, ImGui::GetIO().DeltaTime);
+    }
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, win_bg);
     ImGui::SetNextWindowPos({0, 0});
     ImGui::SetNextWindowSize({(float)w, (float)h});
     ImGui::Begin(id, nullptr, flags);
@@ -464,6 +481,9 @@ void App::render_menu_bar() {
                 enc_level_err_.clear();
                 enc_level_open_ = true;
             }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Log Out", "Ctrl+L", false, db_ != nullptr))
+                logout_requested_ = true;
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) request_quit();
             ImGui::EndMenu();
@@ -1205,6 +1225,30 @@ void App::render_prefs_popup() {
                 apply_theme(prefs_theme_);
                 Config::instance().set_theme(theme_to_string(prefs_theme_));
             }
+        }
+
+        ImGui::Dummy({0, 4});
+
+        ui_::Dimmed("Home Page Theme");
+        ImGui::SameLine(lbl_x);
+        {
+            // Three-cell segmented control, same pattern as Dark/Light above.
+            // Wallpaper only shows on the login/create-database screens.
+            float third = (ctl_w - 2 * sp) / 3.0f;
+            auto cell = [&](const char* label, HomeBackground opt) {
+                bool active = home_bg_ == opt;
+                bool picked = active ? ui_::PrimaryButton(label, {third, 0})
+                                      : ui_::SecondaryButton(label, {third, 0});
+                if (picked && home_bg_ != opt) {
+                    home_bg_ = opt;
+                    Config::instance().set_home_background(home_background_to_string(opt));
+                }
+            };
+            cell("None",   HomeBackground::None);
+            ImGui::SameLine(0, sp);
+            cell("Matrix", HomeBackground::Matrix);
+            ImGui::SameLine(0, sp);
+            cell("Outrun", HomeBackground::Outrun);
         }
 
         ImGui::Dummy({0, 4});
