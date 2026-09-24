@@ -5,6 +5,7 @@
 #include "crypto/SecureMemory.hpp"
 #include "util/Theme.hpp"
 #include "util/Background.hpp"
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -96,6 +97,8 @@ private:
     std::string ef_pass_;
     bool ef_showp_      = false;
     std::string ef_totp_;
+    // TOTP code is masked like the password field until explicitly revealed.
+    bool ef_showtotp_   = false;
 
     // Mirror of the account's custom fields while editing. Held here rather
     // than read straight off the Account so a half-typed row is not written
@@ -142,6 +145,23 @@ private:
     // Animated wallpaper behind the login/create-database screens.
     HomeBackground home_bg_ = HomeBackground::None;
 
+    // Export to EIF popup (File menu)
+    bool exp_open_ = false;
+    bool exp_whole_vault_ = true; // false = only the checked accounts below
+    std::map<std::string, bool> exp_check_; // account id -> included, when not whole-vault
+    char exp_path_[512] = {};
+    char exp_pw_[256]   = {};
+    char exp_con_[256]  = {};
+    bool exp_show_ = false;
+    std::string exp_err_;
+
+    // Import from EIF popup (File menu)
+    bool imp_open_ = false;
+    char imp_path_[512] = {};
+    char imp_pw_[256]   = {};
+    bool imp_show_ = false;
+    std::string imp_err_;
+
     // Delete-account confirmation popup
     bool del_confirm_open_ = false;
 
@@ -162,6 +182,9 @@ private:
     bool cat_delete_confirm_open_ = false;
     std::string cat_delete_id_;
 
+    bool cat_color_open_ = false;
+    std::string cat_color_id_;
+
     // Rendering
     void render_login(int w, int h);
     void render_create_db(int w, int h);
@@ -175,12 +198,15 @@ private:
     void render_chgpw_popup();
     void render_enc_level_popup();
     void render_prefs_popup();
+    void render_export_popup();
+    void render_import_popup();
     void render_delete_confirm_popup();
     void render_quit_confirm_popup();
     void render_about_popup();
     void render_category_add_popup();
     void render_category_rename_popup();
     void render_category_delete_confirm_popup();
+    void render_category_color_popup();
     void render_category_section(const std::string& category_id, const std::string& label, bool deletable,
                                   int color_index, bool searching, const std::string& query);
     void render_status_bar();
@@ -225,6 +251,8 @@ private:
     void clear_editor();
     void do_browse_open(char* buf, size_t n);
     void do_browse_save(char* buf, size_t n);
+    void do_browse_open_eif(char* buf, size_t n);
+    void do_browse_save_eif(char* buf, size_t n);
     void clipboard(const char* text);
     void set_status(const std::string& msg, bool err = false);
     void regenerate_password();

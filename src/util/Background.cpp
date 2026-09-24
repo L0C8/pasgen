@@ -43,16 +43,64 @@ float hash_float(uint32_t x) { return (float)(hash_u32(x) & 0xFFFFFF) / (float)0
 
 // ── Matrix rain ──────────────────────────────────────────────────────────
 //
-// A grid of monospace cells. Each column tracks only a falling "head" row
-// and a fall speed; the glyphs themselves are picked per-frame from a hash
-// of (column, row, a slow time bucket) rather than stored, so the trail
-// shimmers/rewrites itself the way the real effect does without needing a
-// persistent character grid.
+// A grid of monospace cells. Each column runs a couple of independent
+// falling strands (STREAMS_PER_COL) rather than just one, for a denser
+// effect; each strand tracks only a "head" row and a fall speed, and the
+// glyphs themselves are picked per-frame from a hash of (column, row, a
+// slow time bucket) rather than stored, so the trail shimmers/rewrites
+// itself the way the real effect does without needing a persistent
+// character grid.
 
-struct RainColumn {
+constexpr int STREAMS_PER_COL = 2;
+
+struct RainStream {
     float head;   // leading glyph's row, fractional; grows downward
     float speed;  // rows/second
 };
+
+struct RainColumn {
+    RainStream streams[STREAMS_PER_COL];
+};
+
+// Picks a fresh head/speed for one strand, always re-entering from just
+// above the screen -- the same rule on first spawn and on every later
+// respawn (a strand that has fully fallen off the bottom). There's no
+// separate "scatter across the span" case: the first-frame look of an
+// already-running effect comes from fast-forwarding this same rule through
+// a few seconds of simulated time in warm_up_streams(), not from a
+// different seeding formula.
+void reset_stream(RainStream& s, uint32_t seed, int n_rows, int trail) {
+    s.head = -hash_float(seed) * n_rows * 0.6f - (float)trail;
+    s.speed = 4.0f + hash_float(seed ^ 0x9e3779b9u) * 7.0f;
+}
+
+uint32_t stream_base_seed(int col, int stream) {
+    return hash_u32((uint32_t)col * 2654435761u + (uint32_t)stream * 40503u);
+}
+
+// Advances one strand by dt, respawning it (via reset_stream) once it has
+// fully fallen off the bottom. `t` is only used to vary the respawn seed so
+// repeated respawns of the same strand don't all pick the same new speed.
+void step_stream(RainStream& s, uint32_t base_seed, int n_rows, int trail, float dt, float t) {
+    s.head += s.speed * dt;
+    if (s.head - trail > n_rows) {
+        reset_stream(s, base_seed ^ (uint32_t)(t * 1000.0f), n_rows, trail);
+    }
+}
+
+// Runs the exact per-frame update above for a handful of simulated seconds,
+// all before the first real frame draws -- so the rain looks like it has
+// already been falling for a while instead of just having spawned, without
+// hand-placing strands at arbitrary starting heights.
+void warm_up_streams(std::vector<RainColumn>& cols, int n_rows, int trail) {
+    constexpr float WARM_UP_SECONDS = 5.0f;
+    constexpr float WARM_UP_STEP = 1.0f / 30.0f;
+    for (float t = 0.0f; t < WARM_UP_SECONDS; t += WARM_UP_STEP) {
+        for (int c = 0; c < (int)cols.size(); ++c)
+            for (int s = 0; s < STREAMS_PER_COL; ++s)
+                step_stream(cols[c].streams[s], stream_base_seed(c, s), n_rows, trail, WARM_UP_STEP, t);
+    }
+}
 
 void render_matrix(float w, float h, float dt) {
     static std::vector<RainColumn> cols;
@@ -64,7 +112,7 @@ void render_matrix(float w, float h, float dt) {
     const int glyph_count = (int)strlen(glyphset);
 
     ImFont* font = fonts().mono ? fonts().mono : ImGui::GetFont();
-    const float cell_w = 15.0f;
+    const float cell_w = 12.0f;
     const float cell_h = 19.0f;
     const int   n_cols = std::max(1, (int)(w / cell_w) + 1);
     const int   n_rows = std::max(1, (int)(h / cell_h) + 2);
@@ -72,12 +120,15 @@ void render_matrix(float w, float h, float dt) {
 
     // (Re)seed on first use or resize. A resize mid-animation just restarts
     // the columns -- unnoticeable next to a continuously falling effect.
+    // warm_up_streams then fast-forwards a few seconds of real update steps
+    // so the very first frame already shows a screenful of rain instead of
+    // filling in over time.
     if ((int)cols.size() != n_cols) {
         cols.resize(n_cols);
-        for (int c = 0; c < n_cols; ++c) {
-            cols[c].head  = -hash_float(c * 2654435761u) * n_rows * 2.0f;
-            cols[c].speed = 4.0f + hash_float(c * 40503u + 1u) * 7.0f;
-        }
+        for (int c = 0; c < n_cols; ++c)
+            for (int s = 0; s < STREAMS_PER_COL; ++s)
+                reset_stream(cols[c].streams[s], stream_base_seed(c, s), n_rows, trail);
+        warm_up_streams(cols, n_rows, trail);
     }
 
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -88,32 +139,28 @@ void render_matrix(float w, float h, float dt) {
     const ImVec4 dim   (0.05f, 0.10f, 0.30f, 1.0f); // fades toward near-black blue
 
     for (int c = 0; c < n_cols; ++c) {
-        RainColumn& col = cols[c];
-        col.head += col.speed * dt;
-        if (col.head - trail > n_rows) {
-            // Re-enter from above the screen after a randomized delay, so
-            // columns don't all restart in a visible synchronized wave.
-            col.head  = -hash_float(hash_u32(c) ^ (uint32_t)(t * 1000.0f)) * n_rows * 0.6f - trail;
-            col.speed = 4.0f + hash_float(c * 40503u + (uint32_t)shimmer_bucket) * 7.0f;
-        }
+        for (int s = 0; s < STREAMS_PER_COL; ++s) {
+            RainStream& stream = cols[c].streams[s];
+            step_stream(stream, stream_base_seed(c, s), n_rows, trail, dt, t);
 
-        for (int r = 0; r < trail; ++r) {
-            float row = col.head - (float)r;
-            if (row < 0 || row > n_rows) continue;
+            for (int r = 0; r < trail; ++r) {
+                float row = stream.head - (float)r;
+                if (row < 0 || row > n_rows) continue;
 
-            float ft = (float)r / (float)trail; // 0 at the head, 1 at the tail
-            float alpha = powf(1.0f - ft, 2.2f);
-            if (alpha < 0.02f) continue;
+                float ft = (float)r / (float)trail; // 0 at the head, 1 at the tail
+                float alpha = powf(1.0f - ft, 2.2f);
+                if (alpha < 0.02f) continue;
 
-            ImVec4 rgba = (r == 0) ? bright : lerp(mid, dim, ft);
-            rgba.w = alpha;
+                ImVec4 rgba = (r == 0) ? bright : lerp(mid, dim, ft);
+                rgba.w = alpha;
 
-            uint32_t hv = hash_u32((uint32_t)c * 73856093u ^ (uint32_t)row * 19349663u
-                                    ^ (uint32_t)shimmer_bucket * 83492791u);
-            char ch[2] = { glyphset[hv % glyph_count], '\0' };
+                uint32_t hv = hash_u32((uint32_t)c * 73856093u ^ (uint32_t)row * 19349663u
+                                        ^ (uint32_t)s * 2246822519u ^ (uint32_t)shimmer_bucket * 83492791u);
+                char ch[2] = { glyphset[hv % glyph_count], '\0' };
 
-            dl->AddText(font, cell_h * 0.85f, ImVec2(c * cell_w, row * cell_h),
-                        ImGui::ColorConvertFloat4ToU32(rgba), ch);
+                dl->AddText(font, cell_h * 0.85f, ImVec2(c * cell_w, row * cell_h),
+                            ImGui::ColorConvertFloat4ToU32(rgba), ch);
+            }
         }
     }
 }

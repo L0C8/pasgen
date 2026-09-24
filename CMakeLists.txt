@@ -160,6 +160,7 @@ set(PASGEN_SOURCES
     src/core/Database.cpp
     src/core/Account.cpp
     src/core/Category.cpp
+    src/core/ExportFile.cpp
     src/crypto/CryptoEngine.cpp
     src/crypto/KeyDerivation.cpp
     src/crypto/SecureMemory.cpp

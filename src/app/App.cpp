@@ -1,4 +1,5 @@
 #include "app/App.hpp"
+#include "core/ExportFile.hpp"
 #include "util/Config.hpp"
 #include "util/Font.hpp"
 #include "util/PasswordGenerator.hpp"
@@ -50,6 +51,20 @@ static std::string fmt_time(std::chrono::system_clock::time_point tp) {
 static std::string group_totp(const std::string& code) {
     if (code.size() != 6) return code;
     return code.substr(0, 3) + " " + code.substr(3);
+}
+
+// Same grouping as group_totp, but with each digit replaced by '*' -- the
+// TOTP code is as sensitive as the password, so it stays masked until the
+// user asks to reveal it. Plain ASCII, unlike a bullet glyph, is guaranteed
+// to be in every font's default glyph range.
+static std::string mask_totp(const std::string& code) {
+    std::string out;
+    out.reserve(code.size() + 1);
+    for (size_t i = 0; i < code.size(); ++i) {
+        if (i == 3) out += ' ';
+        out += '*';
+    }
+    return out;
 }
 
 // ── App ──────────────────────────────────────────────────────────────────────
@@ -440,6 +455,8 @@ void App::render_main(int w, int h) {
     render_gen_popup();
     render_chgpw_popup();
     render_enc_level_popup();
+    render_export_popup();
+    render_import_popup();
     render_prefs_popup();
     render_delete_confirm_popup();
     render_quit_confirm_popup();
@@ -447,6 +464,7 @@ void App::render_main(int w, int h) {
     render_category_add_popup();
     render_category_rename_popup();
     render_category_delete_confirm_popup();
+    render_category_color_popup();
 
     ImGui::End();
     ImGui::PopStyleColor();
@@ -480,6 +498,26 @@ void App::render_menu_bar() {
                 enc_level_pick_ = Database::EncryptionLevel::Standard;
                 enc_level_err_.clear();
                 enc_level_open_ = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Export to EIF...", nullptr, false, db_ != nullptr)) {
+                exp_whole_vault_ = true;
+                exp_check_.clear();
+                for (const Account* a : db_->get_all_accounts()) exp_check_[a->id()] = true;
+                SecureMemory::secure_zero(exp_pw_,  sizeof(exp_pw_));
+                SecureMemory::secure_zero(exp_con_, sizeof(exp_con_));
+                exp_show_ = false;
+                exp_err_.clear();
+                std::string suggested = db_->metadata().name.empty() ? "export" : db_->metadata().name;
+                safe_copy(exp_path_, sizeof(exp_path_), suggested + ".eif");
+                exp_open_ = true;
+            }
+            if (ImGui::MenuItem("Import from EIF...", nullptr, false, db_ != nullptr)) {
+                imp_path_[0] = '\0';
+                SecureMemory::secure_zero(imp_pw_, sizeof(imp_pw_));
+                imp_show_ = false;
+                imp_err_.clear();
+                imp_open_ = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Log Out", "Ctrl+L", false, db_ != nullptr))
@@ -563,8 +601,10 @@ void App::render_sidebar(float width, float height) {
     }
 
     const auto& cats = db_->categories();
-    for (size_t i = 0; i < cats.size(); ++i)
-        render_category_section(cats[i].id(), cats[i].name(), true, (int)i, searching, q);
+    for (size_t i = 0; i < cats.size(); ++i) {
+        int swatch = cats[i].color_index() >= 0 ? cats[i].color_index() : (int)i;
+        render_category_section(cats[i].id(), cats[i].name(), true, swatch, searching, q);
+    }
     render_category_section("", "Uncategorized", false, -1, searching, q);
 
     if (db_->account_count() == 0) {
@@ -646,6 +686,10 @@ void App::render_category_section(const std::string& category_id, const std::str
             cat_rename_open_ = true;
             cat_rename_id_   = category_id;
             safe_copy(cat_rename_name_, sizeof(cat_rename_name_), label);
+        }
+        if (ImGui::MenuItem("Color")) {
+            cat_color_open_ = true;
+            cat_color_id_   = category_id;
         }
         if (ImGui::MenuItem("Delete")) {
             cat_delete_confirm_open_ = true;
@@ -835,10 +879,17 @@ void App::render_account_detail(float width) {
 
     ImGui::Dummy({0, 6});
 
-    if (field_commit("TOTP SECRET", "##totp", ef_totp_, fw, 0,
+    // Masked like the password field: the secret is what lets anyone generate
+    // every future code, so it stays hidden behind the same Show/Hide toggle
+    // that reveals the live code below.
+    ImGuiInputTextFlags totp_pf = ef_showtotp_ ? 0 : ImGuiInputTextFlags_Password;
+    if (field_commit("TOTP SECRET", "##totp", ef_totp_, fw - act_w - sp, totp_pf,
               "Base32 secret (optional)")) {
         acc->set_totp_secret(ef_totp_); db_->mark_dirty();
     }
+    ImGui::SameLine(0, sp);
+    if (ui_::SecondaryButton(ef_showtotp_ ? "Hide##sts" : "Show##sts", {act_w, 0}))
+        ef_showtotp_ = !ef_showtotp_;
 
     if (!ef_totp_.empty()) {
         ImGui::Dummy({0, 4});
@@ -850,11 +901,13 @@ void App::render_account_detail(float width) {
 
             if (fonts().h2) ImGui::PushFont(fonts().h2);
             ImGui::PushStyleColor(ImGuiCol_Text, p.accent);
-            ImGui::TextUnformatted(group_totp(code).c_str());
+            ImGui::TextUnformatted(ef_showtotp_ ? group_totp(code).c_str() : mask_totp(code).c_str());
             ImGui::PopStyleColor();
             if (fonts().h2) ImGui::PopFont();
 
             ImGui::SameLine(0, 12);
+            if (ui_::TinyButton(ef_showtotp_ ? "Hide##st" : "Show##st")) ef_showtotp_ = !ef_showtotp_;
+            ImGui::SameLine(0, 10);
             if (ui_::TinyButton("Copy##ct")) clipboard(code.c_str());
             ImGui::SameLine(0, 10);
             ui_::Caption("expires in %us", rem);
@@ -1180,6 +1233,243 @@ void App::render_enc_level_popup() {
                 enc_level_err_ = e.what();
             }
         }
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+}
+
+// ── EXPORT / IMPORT (EIF) ────────────────────────────────────────────────────
+//
+// An .eif is a standalone file for moving accounts between vaults: it is
+// encrypted under its own export password (unrelated to either vault's
+// master password) using the same authenticated-header/cascade-cipher
+// construction as .pif -- see core/ExportFile.cpp. Export writes one from
+// the open database (the whole vault, or a chosen subset of accounts);
+// Import reads one into whatever vault is currently open, adding every
+// account as new (matching categories by name, creating them if needed).
+
+void App::render_export_popup() {
+    if (exp_open_) { ImGui::OpenPopup("##export"); exp_open_ = false; }
+
+    ImGui::SetNextWindowSize({480, 0}, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
+    if (ImGui::BeginPopupModal("##export", nullptr,
+                               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+        const Palette& p = palette();
+        ui_::Heading("Export to EIF");
+        ui_::Caption("A portable file, protected by its own password, that another "
+                     "vault can import.");
+        ImGui::Dummy({0, 12});
+
+        float w  = ImGui::GetContentRegionAvail().x;
+        float sp = ImGui::GetStyle().ItemSpacing.x;
+
+        // Scope
+        {
+            float half = (w - sp) * 0.5f;
+            bool pick_all  = exp_whole_vault_  ? ui_::PrimaryButton("Whole Vault", {half, 0})
+                                                : ui_::SecondaryButton("Whole Vault", {half, 0});
+            ImGui::SameLine(0, sp);
+            bool pick_some = !exp_whole_vault_ ? ui_::PrimaryButton("Selected Accounts", {half, 0})
+                                                : ui_::SecondaryButton("Selected Accounts", {half, 0});
+            if (pick_all)  exp_whole_vault_ = true;
+            if (pick_some) exp_whole_vault_ = false;
+        }
+
+        int checked_count = 0;
+        if (!exp_whole_vault_ && db_) {
+            ImGui::Dummy({0, 8});
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+            ui_::BeginCard("##exp_list", {w, 180}, true);
+            for (const Account* a : db_->get_all_accounts()) {
+                bool checked = exp_check_[a->id()];
+                std::string label = (a->name().empty() ? "(unnamed)" : a->name()) + "##" + a->id();
+                if (ImGui::Checkbox(label.c_str(), &checked)) exp_check_[a->id()] = checked;
+                if (checked) ++checked_count;
+            }
+            ui_::EndCard();
+            ImGui::PopStyleVar();
+            ui_::Caption("%d account(s) selected", checked_count);
+        } else if (db_) {
+            checked_count = (int)db_->account_count();
+        }
+
+        ImGui::Dummy({0, 10});
+
+        const float browse_w = 86.0f;
+        field("DESTINATION FILE", "##exppath", exp_path_, sizeof(exp_path_),
+              w - browse_w - sp, 0, "export.eif");
+        ImGui::SameLine(0, sp);
+        if (ui_::SecondaryButton("Browse", {browse_w, 0})) do_browse_save_eif(exp_path_, sizeof(exp_path_));
+
+        ImGui::Dummy({0, 4});
+
+        float show_w = 66.0f;
+        ImGuiInputTextFlags pf = exp_show_ ? 0 : ImGuiInputTextFlags_Password;
+        field("EXPORT PASSWORD", "##exppw1", exp_pw_, sizeof(exp_pw_), w - show_w - sp, pf);
+        ImGui::SameLine(0, sp);
+        if (ui_::SecondaryButton(exp_show_ ? "Hide" : "Show", {show_w, 0})) exp_show_ = !exp_show_;
+        field("CONFIRM PASSWORD", "##exppw2", exp_con_, sizeof(exp_con_), w - show_w - sp, pf);
+
+        ImGui::Dummy({0, 8});
+        int s = pw_strength(exp_pw_);
+        ui_::StrengthMeter(exp_pw_[0] ? strength_frac(s) : 0.0f, strength_color(s),
+                           exp_pw_[0] ? strength_label(s) : "", w * 0.5f);
+
+        if (!exp_err_.empty()) {
+            ImGui::Dummy({0, 8});
+            ui_::Banner(exp_err_.c_str(), p.danger);
+        }
+
+        ImGui::Dummy({0, 14});
+        bool match = std::strcmp(exp_pw_, exp_con_) == 0;
+        bool ok = db_ && exp_pw_[0] && match && exp_path_[0] && checked_count > 0;
+        float half = (w - sp) * 0.5f;
+        if (ui_::SecondaryButton("Cancel", {half, 38})) {
+            SecureMemory::secure_zero(exp_pw_,  sizeof(exp_pw_));
+            SecureMemory::secure_zero(exp_con_, sizeof(exp_con_));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(0, sp);
+        if (!ok) ImGui::BeginDisabled();
+        if (ui_::PrimaryButton("Export", {half, 38})) {
+            try {
+                ExportFile::Payload payload;
+                payload.source_vault_name = db_->metadata().name;
+                payload.exported_at = std::chrono::system_clock::now();
+
+                std::vector<const Account*> chosen;
+                for (const Account* a : db_->get_all_accounts()) {
+                    if (exp_whole_vault_ || exp_check_[a->id()]) chosen.push_back(a);
+                }
+                // Only the categories those accounts actually use travel with
+                // them, so a partial export doesn't drag along empty ones.
+                for (const Category& c : db_->categories()) {
+                    bool used = std::any_of(chosen.begin(), chosen.end(),
+                                            [&](const Account* a) { return a->category_id() == c.id(); });
+                    if (used) payload.categories.push_back(c);
+                }
+                for (const Account* a : chosen) payload.accounts.push_back(*a);
+
+                std::string path = exp_path_;
+                if (path.size() < 4 || path.substr(path.size() - 4) != ".eif") path += ".eif";
+
+                ExportFile::write(path, SecureString(exp_pw_), payload);
+                SecureMemory::secure_zero(exp_pw_,  sizeof(exp_pw_));
+                SecureMemory::secure_zero(exp_con_, sizeof(exp_con_));
+                set_status("Exported " + std::to_string(payload.accounts.size()) + " account(s) to " + path);
+                ImGui::CloseCurrentPopup();
+            } catch (const std::exception& e) {
+                exp_err_ = e.what();
+            }
+        }
+        if (!ok) ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+}
+
+void App::render_import_popup() {
+    if (imp_open_) { ImGui::OpenPopup("##import"); imp_open_ = false; }
+
+    ImGui::SetNextWindowSize({460, 0}, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
+    if (ImGui::BeginPopupModal("##import", nullptr,
+                               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+        const Palette& p = palette();
+        ui_::Heading("Import from EIF");
+        ui_::Caption("Every account in the file is added to this vault as new; "
+                     "matching categories are reused by name.");
+        ImGui::Dummy({0, 12});
+
+        float w  = ImGui::GetContentRegionAvail().x;
+        float sp = ImGui::GetStyle().ItemSpacing.x;
+        float browse_w = 86.0f;
+
+        field("EIF FILE", "##imppath", imp_path_, sizeof(imp_path_),
+              w - browse_w - sp, 0, "path/to/export.eif");
+        ImGui::SameLine(0, sp);
+        if (ui_::SecondaryButton("Browse", {browse_w, 0})) do_browse_open_eif(imp_path_, sizeof(imp_path_));
+
+        ImGui::Dummy({0, 4});
+
+        float show_w = 66.0f;
+        ImGuiInputTextFlags pf = imp_show_ ? 0 : ImGuiInputTextFlags_Password;
+        bool enter = field("EXPORT PASSWORD", "##imppw", imp_pw_, sizeof(imp_pw_),
+                           w - show_w - sp, pf | ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine(0, sp);
+        if (ui_::SecondaryButton(imp_show_ ? "Hide" : "Show", {show_w, 0})) imp_show_ = !imp_show_;
+
+        if (!imp_err_.empty()) {
+            ImGui::Dummy({0, 8});
+            ui_::Banner(imp_err_.c_str(), p.danger);
+        }
+
+        ImGui::Dummy({0, 14});
+        bool ok = db_ && imp_path_[0] && imp_pw_[0];
+        float half = (w - sp) * 0.5f;
+        if (ui_::SecondaryButton("Cancel", {half, 38})) {
+            SecureMemory::secure_zero(imp_pw_, sizeof(imp_pw_));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(0, sp);
+        if (!ok) ImGui::BeginDisabled();
+        if (ui_::PrimaryButton("Import", {half, 38}) || (enter && ok)) {
+            try {
+                ExportFile::Payload payload = ExportFile::read(imp_path_, SecureString(imp_pw_));
+
+                // Match/create categories by name -- ids in the file are only
+                // meaningful within it, never in this vault.
+                std::map<std::string, std::string> cat_map; // eif category id -> this vault's id
+                for (const Category& c : payload.categories) {
+                    std::string target_id;
+                    for (const Category& existing : db_->categories()) {
+                        if (existing.name() == c.name()) { target_id = existing.id(); break; }
+                    }
+                    if (target_id.empty()) target_id = db_->add_category(c.name());
+                    cat_map[c.id()] = target_id;
+                }
+
+                int imported = 0;
+                for (const Account& src : payload.accounts) {
+                    // A fresh Account gets its own new id and timestamps, so
+                    // importing never collides with (or silently overwrites)
+                    // anything already in this vault, even on a re-import of
+                    // the same file. Password history does not carry over.
+                    Account a;
+                    a.set_name(src.name());
+                    a.set_email(src.email());
+                    a.set_url(src.url());
+                    a.set_username(src.username());
+                    a.set_password(src.password());
+                    a.set_notes(src.notes());
+                    a.set_totp_secret(src.totp_secret());
+                    a.set_favorite(src.favorite());
+                    a.set_archived(src.archived());
+                    for (const auto& f : src.custom_fields())
+                        a.add_custom_field(f.name, f.value, f.secret);
+
+                    std::string target_cat;
+                    auto it = cat_map.find(src.category_id());
+                    if (it != cat_map.end()) target_cat = it->second;
+
+                    std::string new_id = a.id();
+                    db_->add_account(std::move(a));
+                    db_->move_account(new_id, target_cat, INT_MAX); // appended to the end
+                    ++imported;
+                }
+
+                SecureMemory::secure_zero(imp_pw_, sizeof(imp_pw_));
+                set_status("Imported " + std::to_string(imported) + " account(s) from " +
+                          payload.source_vault_name + ".");
+                ImGui::CloseCurrentPopup();
+            } catch (const std::exception& e) {
+                imp_err_ = e.what();
+            }
+        }
+        if (!ok) ImGui::EndDisabled();
         ImGui::EndPopup();
     }
     ImGui::PopStyleVar();
@@ -1536,6 +1826,47 @@ void App::render_category_delete_confirm_popup() {
     ImGui::PopStyleVar();
 }
 
+void App::render_category_color_popup() {
+    if (cat_color_open_) { ImGui::OpenPopup("##catcolor"); cat_color_open_ = false; }
+
+    const Palette& p = palette();
+    ImGui::SetNextWindowSize({260, 0}, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
+    if (ImGui::BeginPopupModal("##catcolor", nullptr,
+                               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+        ui_::Heading("Category Color");
+        ImGui::Dummy({0, 12});
+
+        const float swatch = 36.0f;
+        const float sp     = ImGui::GetStyle().ItemSpacing.x;
+        const int   per_row = 4;
+        for (int i = 0; i < 8; ++i) {
+            ImGui::PushID(i);
+            if (ImGui::ColorButton("##sw", p.category[i],
+                                    ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoAlpha,
+                                    {swatch, swatch})) {
+                db_->set_category_color(cat_color_id_, i);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::PopID();
+            if (i % per_row != per_row - 1 && i != 7) ImGui::SameLine(0, sp);
+        }
+
+        ImGui::Dummy({0, 14});
+        float w = ImGui::GetContentRegionAvail().x;
+        if (ui_::SecondaryButton("Auto", {w, 0})) {
+            db_->set_category_color(cat_color_id_, -1);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::Dummy({0, 6});
+        if (ui_::SecondaryButton("Cancel", {w, 0})) ImGui::CloseCurrentPopup();
+
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+}
+
 // ── ACTIONS ──────────────────────────────────────────────────────────────────
 
 void App::do_save() {
@@ -1613,6 +1944,7 @@ void App::load_account_to_editor(const Account& acc) {
     const auto& pw = acc.password();
     ef_pass_.assign(pw.c_str(), pw.size());
     ef_showp_ = false;
+    ef_showtotp_ = false;
 }
 
 void App::clear_editor() {
@@ -1631,6 +1963,7 @@ void App::clear_editor() {
     secure_clear_string(cf_new_value_);
     cf_new_secret_ = false;
     ef_showp_ = false;
+    ef_showtotp_ = false;
 }
 
 void App::do_browse_open(char* buf, size_t n) {
@@ -1646,6 +1979,23 @@ void App::do_browse_save(char* buf, size_t n) {
     try {
         std::string r = pfd::save_file("Save Database", buf[0] ? buf : "vault.pif",
                                        {"PIF Database (*.pif)", "*.pif"}).result();
+        if (!r.empty()) std::strncpy(buf, r.c_str(), n - 1);
+    } catch (...) {}
+}
+
+void App::do_browse_open_eif(char* buf, size_t n) {
+    try {
+        auto r = pfd::open_file("Import from EIF", buf[0] ? buf : "",
+                                {"Exported Index File (*.eif)", "*.eif",
+                                 "All Files", "*"}).result();
+        if (!r.empty()) std::strncpy(buf, r[0].c_str(), n - 1);
+    } catch (...) {}
+}
+
+void App::do_browse_save_eif(char* buf, size_t n) {
+    try {
+        std::string r = pfd::save_file("Export to EIF", buf[0] ? buf : "export.eif",
+                                       {"Exported Index File (*.eif)", "*.eif"}).result();
         if (!r.empty()) std::strncpy(buf, r.c_str(), n - 1);
     } catch (...) {}
 }
