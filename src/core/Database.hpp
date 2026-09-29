@@ -107,6 +107,9 @@ public:
     // reference into it would dangle as soon as another category is added.
     std::string add_category(const std::string& name);
     void rename_category(const std::string& id, const std::string& name);
+    // color_index is an index into Palette::category, or -1 to go back to
+    // the position-cycled default.
+    void set_category_color(const std::string& id, int color_index);
     void remove_category(const std::string& id);
     void reorder_category(const std::string& id, int new_index);
     std::vector<Account*> get_accounts_in_category(const std::string& category_id);

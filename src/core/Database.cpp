@@ -239,6 +239,12 @@ void Database::rename_category(const std::string& id, const std::string& name) {
     }
 }
 
+void Database::set_category_color(const std::string& id, int color_index) {
+    for (auto& c : categories_) {
+        if (c.id() == id) { c.set_color_index(color_index); is_dirty_ = true; return; }
+    }
+}
+
 void Database::remove_category(const std::string& id) {
     auto it = std::find_if(categories_.begin(), categories_.end(),
                             [&](const Category& c) { return c.id() == id; });
