@@ -15,6 +15,10 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+option(PASGEN_BUILD_IMGUI "Build the ImGui/SDL2 desktop app (pasgen)" ON)
+option(PASGEN_BUILD_WX    "Build the native wxWidgets desktop app (pasgen-wx)" OFF)
+option(PASGEN_BUILD_TESTS "Build the core unit tests (pasgen-tests)" ON)
+
 include(FetchContent)
 
 if(APPLE)
@@ -27,6 +31,7 @@ if(APPLE)
 endif()
 find_package(OpenSSL 1.1.1 REQUIRED)
 
+if(PASGEN_BUILD_IMGUI)
 find_package(SDL2 QUIET CONFIG)
 if(NOT SDL2_FOUND)
     find_package(PkgConfig QUIET)
@@ -92,6 +97,8 @@ if(APPLE)
     target_compile_options(imgui_lib PRIVATE -Wno-deprecated-declarations)
 endif()
 
+endif() # PASGEN_BUILD_IMGUI
+
 find_package(nlohmann_json 3.9.0 QUIET)
 if(NOT nlohmann_json_FOUND)
     FetchContent_Declare(
@@ -129,6 +136,7 @@ if(NOT ARGON2_FOUND)
     endif()
 endif()
 
+if(PASGEN_BUILD_IMGUI)
 FetchContent_Declare(
     pfd
     GIT_REPOSITORY https://github.com/samhocevar/portable-file-dialogs.git
@@ -154,9 +162,10 @@ if(NOT nanosvg_POPULATED)
     FetchContent_Populate(nanosvg)
 endif()
 
-set(PASGEN_SOURCES
-    src/main.cpp
-    src/app/App.cpp
+endif() # PASGEN_BUILD_IMGUI
+
+# --- Core: vault format, crypto, generator. No GUI dependencies. ----------
+add_library(pasgen_core STATIC
     src/core/Database.cpp
     src/core/Account.cpp
     src/core/Category.cpp
@@ -166,12 +175,35 @@ set(PASGEN_SOURCES
     src/crypto/SecureMemory.cpp
     src/util/TOTPGenerator.cpp
     src/util/PasswordGenerator.cpp
+    src/util/Wordlist.cpp
     src/util/Config.cpp
+    src/util/Uuid.cpp
+    src/util/AtomicFile.cpp
+)
+target_include_directories(pasgen_core PUBLIC ${CMAKE_SOURCE_DIR}/src ${ARGON2_INCLUDE_DIRS})
+target_link_libraries(pasgen_core PUBLIC
+    OpenSSL::Crypto
+    nlohmann_json::nlohmann_json
+    ${ARGON2_LIBRARIES}
+)
+if(MSVC)
+    target_compile_options(pasgen_core PRIVATE /W3)
+    target_compile_definitions(pasgen_core PUBLIC NOMINMAX)
+else()
+    target_compile_options(pasgen_core PRIVATE -Wall -Wextra)
+endif()
+
+include(GNUInstallDirs)
+
+# --- ImGui + SDL2 app ---------------------------------------------------------
+if(PASGEN_BUILD_IMGUI)
+set(PASGEN_SOURCES
+    src/main.cpp
+    src/app/App.cpp
     src/util/Theme.cpp
     src/util/Background.cpp
     src/util/Font.cpp
     src/util/Widgets.cpp
-    src/util/Uuid.cpp
 )
 
 add_executable(pasgen ${PASGEN_SOURCES})
@@ -203,18 +235,14 @@ add_custom_command(TARGET pasgen POST_BUILD
 )
 
 target_include_directories(pasgen PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${ARGON2_INCLUDE_DIRS}
     ${pfd_SOURCE_DIR}
     ${nanosvg_SOURCE_DIR}/src
 )
 
 target_link_libraries(pasgen PRIVATE
+    pasgen_core
     imgui_lib
     OpenSSL::SSL
-    OpenSSL::Crypto
-    nlohmann_json::nlohmann_json
-    ${ARGON2_LIBRARIES}
 )
 
 if(TARGET SDL2::SDL2)
@@ -244,7 +272,52 @@ else()
     target_compile_options(pasgen PRIVATE -Wall -Wextra)
 endif()
 
-include(GNUInstallDirs)
 install(TARGETS pasgen RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES ${PASGEN_BUNDLED_FONTS} DESTINATION ${CMAKE_INSTALL_BINDIR}/fonts)
 install(FILES ${CMAKE_SOURCE_DIR}/assets/icon.svg DESTINATION ${CMAKE_INSTALL_BINDIR}/assets)
+endif() # PASGEN_BUILD_IMGUI
+
+# --- Native wxWidgets app -----------------------------------------------------
+if(PASGEN_BUILD_WX)
+    find_package(wxWidgets 3.2 COMPONENTS core base)
+    if(NOT wxWidgets_FOUND)
+        message(FATAL_ERROR
+            "wxWidgets 3.2 or newer was not found.\n"
+            "  Debian/Ubuntu: sudo apt install libwxgtk3.2-dev\n"
+            "  Fedora:        sudo dnf install wxGTK-devel\n"
+            "  macOS:         brew install wxwidgets\n"
+            "  Windows:       vcpkg install wxwidgets\n"
+            "Or configure with -DPASGEN_BUILD_WX=OFF.")
+    endif()
+    add_executable(pasgen-wx WIN32 MACOSX_BUNDLE
+        wx/app.cpp
+        wx/main_frame.cpp
+        wx/account_panel.cpp
+        wx/dialogs.cpp
+        wx/secret_field.cpp
+        wx/secure_clipboard.cpp
+        wx/strength.cpp
+    )
+    if(WIN32)
+        target_sources(pasgen-wx PRIVATE wx/pasgen.rc)
+    endif()
+    target_include_directories(pasgen-wx SYSTEM PRIVATE ${wxWidgets_INCLUDE_DIRS})
+    target_compile_definitions(pasgen-wx PRIVATE ${wxWidgets_DEFINITIONS}
+        "$<$<CONFIG:Debug>:${wxWidgets_DEFINITIONS_DEBUG}>")
+    target_compile_options(pasgen-wx PRIVATE ${wxWidgets_CXX_FLAGS})
+    if(MSVC)
+        target_compile_options(pasgen-wx PRIVATE /W3 /utf-8)
+    else()
+        target_compile_options(pasgen-wx PRIVATE -Wall -Wextra)
+    endif()
+    target_link_libraries(pasgen-wx PRIVATE pasgen_core ${wxWidgets_LIBRARIES})
+    install(TARGETS pasgen-wx RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} BUNDLE DESTINATION .)
+endif()
+
+# --- Tests --------------------------------------------------------------------
+if(PASGEN_BUILD_TESTS)
+    enable_testing()
+    add_executable(pasgen-tests tests/test_core.cpp)
+    target_link_libraries(pasgen-tests PRIVATE pasgen_core)
+    add_test(NAME core COMMAND pasgen-tests)
+endif()

@@ -6,6 +6,7 @@
 #include "crypto/CryptoEngine.hpp"
 #include "crypto/KeyDerivation.hpp"
 #include <filesystem>
+#include "util/AtomicFile.hpp"
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -109,9 +110,9 @@ void ExportFile::write(const std::string& path, const SecureString& export_passw
     // file may sit on a USB drive or in a downloads folder, so it gets the
     // same calibrated cost as a "Standard" .pif rather than something
     // cheaper -- see Database::apply_encryption_level(Standard).
-    Argon2Params kp = KeyDerivation::argon2_available()
-        ? KeyDerivation::benchmark(std::chrono::milliseconds(750))
-        : KDFParams::low_memory(); // falls back to PBKDF2 like Database does
+    // benchmark() already picks PBKDF2 when this build has no Argon2. The old
+    // low_memory() fallback here was stamped Argon2id, so it could never work.
+    Argon2Params kp = KeyDerivation::benchmark(std::chrono::milliseconds(750));
     const SecureBytes key = crypto.derive_key(export_password, salt, kp);
 
     const uint32_t declared_len = (uint32_t)(plain.size() + CryptoEngine::TAG_SIZE);
@@ -139,28 +140,19 @@ void ExportFile::write(const std::string& path, const SecureString& export_passw
     std::vector<uint8_t> ct(enc.begin(), enc.end() - CryptoEngine::TAG_SIZE);
     std::vector<uint8_t> tag(enc.end() - CryptoEngine::TAG_SIZE, enc.end());
 
-    // Same write-to-temp-then-rename pattern as Database::write_to_file, so
-    // an interrupted export cannot leave a half-written file at `path`.
-    const std::string tmp = path + ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) throw ExportException("Failed to write: " + tmp);
-        f.write((char*)header.data(), header.size());
-        f.write((char*)ct.data(), ct.size());
-        f.write((char*)tag.data(), tag.size());
-        f.flush();
-        if (!f) throw ExportException("Write failed");
-    }
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
-        std::filesystem::remove(tmp, ec);
-        throw ExportException("Failed to write export file: " + path);
-    }
+    // Temp file + flush + rename (see util/AtomicFile.hpp), so an interrupted
+    // save cannot leave a half-written file where the real one used to be.
+    std::vector<uint8_t> file;
+    file.reserve(header.size() + ct.size() + tag.size());
+    file.insert(file.end(), header.begin(), header.end());
+    file.insert(file.end(), ct.begin(), ct.end());
+    file.insert(file.end(), tag.begin(), tag.end());
+    try { write_file_atomic(path, file); }
+    catch (const std::exception& e) { throw ExportException(e.what()); }
 }
 
 ExportFile::Payload ExportFile::read(const std::string& path, const SecureString& export_password) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(path_from_utf8(path), std::ios::binary);
     if (!f) throw ExportException("Failed to open: " + path);
 
     f.seekg(0, std::ios::end);
