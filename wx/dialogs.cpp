@@ -49,7 +49,7 @@ wxRadioBox* make_level_box(wxWindow* parent, Level initial) {
 void bind_level_help(wxRadioBox* box, wxStaticText* help, wxWindow* dialog) {
     auto update = [box, help, dialog] {
         help->SetLabel(U(Database::encryption_level_description(kLevels[box->GetSelection()])));
-        help->Wrap(dialog->FromDIP(420));
+        help->Wrap(dialog->FromDIP(500));
         dialog->Layout();
         dialog->Fit();
     };
@@ -57,7 +57,7 @@ void bind_level_help(wxRadioBox* box, wxStaticText* help, wxWindow* dialog) {
     update();
 }
 
-wxStaticText* caption(wxWindow* parent, const wxString& text, int wrap_dip = 420) {
+wxStaticText* caption(wxWindow* parent, const wxString& text, int wrap_dip = 500) {
     auto* t = new wxStaticText(parent, wxID_ANY, text);
     t->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
     t->Wrap(parent->FromDIP(wrap_dip));
@@ -166,6 +166,115 @@ void MasterPasswordInput::Focus() { password_->FocusEntry(); }
 void MasterPasswordInput::Wipe() {
     password_->Clear();
     confirm_->Clear();
+}
+
+// ---------------------------------------------------------------------------
+// UnlockDialog
+
+UnlockDialog::UnlockDialog(wxWindow* parent, const wxString& path, UnlockFn unlock)
+    : wxDialog(parent, wxID_ANY, "Unlock Vault"), unlock_(std::move(unlock)) {
+    const int pad = FromDIP(12);
+    file_ = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+                             wxST_ELLIPSIZE_MIDDLE);
+    file_->SetFont(file_->GetFont().Bold());
+    folder_ = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+                               wxST_ELLIPSIZE_MIDDLE);
+    folder_->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+    auto* change = new wxButton(this, wxID_OPEN, "Open Other...");
+    password_ = new SecretField(this, SecretField::WithToggle | SecretField::EnterKey);
+    error_ = new wxStaticText(this, wxID_ANY, wxEmptyString);
+    error_->SetForegroundColour(StrengthColour(0));
+    error_->Hide();
+
+    auto* file_col = new wxBoxSizer(wxVERTICAL);
+    file_col->Add(file_, wxSizerFlags().Expand());
+    file_col->Add(folder_, wxSizerFlags().Expand());
+    auto* file_row = new wxBoxSizer(wxHORIZONTAL);
+    file_row->Add(file_col, wxSizerFlags(1).CenterVertical());
+    file_row->AddSpacer(pad);
+    file_row->Add(change, wxSizerFlags().CenterVertical());
+
+    auto* buttons = new wxBoxSizer(wxHORIZONTAL);
+    buttons->Add(new wxButton(this, ID_NEW_VAULT, "New Vault..."));
+    buttons->AddStretchSpacer();
+    auto* cancel = new wxButton(this, wxID_CANCEL, "Cancel");
+    auto* ok = new wxButton(this, wxID_OK, "Unlock");
+    ok->SetDefault();
+    buttons->Add(cancel);
+    buttons->AddSpacer(FromDIP(6));
+    buttons->Add(ok);
+
+    auto* root = new wxBoxSizer(wxVERTICAL);
+    root->Add(file_row, wxSizerFlags().Expand().Border(wxALL, pad));
+    root->Add(new wxStaticText(this, wxID_ANY, "Master password:"),
+              wxSizerFlags().Border(wxLEFT | wxRIGHT, pad));
+    root->AddSpacer(FromDIP(4));
+    root->Add(password_, wxSizerFlags().Expand().Border(wxLEFT | wxRIGHT, pad));
+    root->Add(error_, wxSizerFlags().Border(wxLEFT | wxRIGHT | wxTOP, pad));
+    root->Add(buttons, wxSizerFlags().Expand().Border(wxALL, pad));
+    SetSizer(root);
+    SetPath(path);
+    Fit();
+    SetSize(std::max(GetSize().x, FromDIP(460)), -1);
+    CentreOnParent();
+
+    password_->OnEnter = [this] { TryUnlock(); };
+    ok->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { TryUnlock(); });
+    change->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        wxFileDialog dlg(this, "Open Vault", wxFileName(path_).GetPath(), wxEmptyString,
+                         "Pasgen vault (*.pif)|*.pif|All files|*", wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+        if (dlg.ShowModal() == wxID_OK) SetPath(dlg.GetPath());
+        password_->FocusEntry();
+    });
+    Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EndModal(ID_NEW_VAULT); }, ID_NEW_VAULT);
+    CallAfter([this] { password_->FocusEntry(); });
+}
+
+UnlockDialog::~UnlockDialog() { password_->Clear(); }
+
+void UnlockDialog::SetPath(const wxString& path) {
+    path_ = path;
+    if (path.empty()) {
+        file_->SetLabel("No vault selected");
+        folder_->SetLabel("Open one, or create a new vault.");
+    } else {
+        wxFileName fn(path);
+        file_->SetLabel(fn.GetFullName());
+        folder_->SetLabel(fn.GetPath());
+    }
+    error_->SetLabel(wxString());
+    error_->Hide();
+    Layout();
+}
+
+void UnlockDialog::TryUnlock() {
+    if (path_.empty() || !wxFileName::FileExists(path_)) {
+        error_->SetLabel(path_.empty() ? "Choose a vault file first." : "That file no longer exists.");
+        error_->Show();
+        Layout();
+        Fit();
+        return;
+    }
+    if (password_->GetValue().empty()) {
+        password_->FocusEntry();
+        return;
+    }
+    const wxString err = unlock_(S(path_), SecureString(S(password_->GetValue())));
+    if (err.empty()) {
+        password_->Clear();
+        EndModal(wxID_OK);
+        return;
+    }
+    error_->SetLabel(err);
+    error_->Wrap(GetClientSize().x - FromDIP(24));
+    error_->Show();
+    password_->Clear();
+    password_->FocusEntry();
+    // Grow to fit the message, never shrink the width.
+    const int width = GetSize().x;
+    Layout();
+    Fit();
+    SetSize(std::max(width, GetSize().x), -1);
 }
 
 // ---------------------------------------------------------------------------

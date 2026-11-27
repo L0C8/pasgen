@@ -159,6 +159,12 @@ void AccountPanel::Build() {
                              wxLC_REPORT | wxLC_SINGLE_SEL);
     fields_->AppendColumn("Name", wxLIST_FORMAT_LEFT, FromDIP(150));
     fields_->AppendColumn("Value", wxLIST_FORMAT_LEFT, FromDIP(260));
+    // Value column takes whatever width the name column leaves.
+    fields_->Bind(wxEVT_SIZE, [this](wxSizeEvent& e) {
+        const int w = fields_->GetClientSize().x - fields_->GetColumnWidth(0);
+        if (w > FromDIP(80)) fields_->SetColumnWidth(1, w);
+        e.Skip();
+    });
     auto* field_add = new wxButton(cb, wxID_ANY, "Add...");
     field_edit_ = new wxButton(cb, wxID_ANY, "Edit...");
     field_copy_ = new wxButton(cb, wxID_ANY, "Copy");
@@ -185,6 +191,11 @@ void AccountPanel::Build() {
                               wxLC_REPORT | wxLC_SINGLE_SEL);
     history_->AppendColumn("Replaced", wxLIST_FORMAT_LEFT, FromDIP(150));
     history_->AppendColumn("Password", wxLIST_FORMAT_LEFT, FromDIP(200));
+    history_->Bind(wxEVT_SIZE, [this](wxSizeEvent& e) {
+        const int w = history_->GetClientSize().x - history_->GetColumnWidth(0);
+        if (w > FromDIP(80)) history_->SetColumnWidth(1, w);
+        e.Skip();
+    });
     history_copy_ = new wxButton(hb, wxID_ANY, "Copy");
     history_copy_->SetToolTip("Copy the selected old password, e.g. when a site still expects it");
     auto* hrow = new wxBoxSizer(wxHORIZONTAL);
@@ -473,7 +484,8 @@ void AccountPanel::AddField() {
     Account* a = Acc();
     if (!a) return;
     CustomFieldDialog dlg(this, "Add Field", wxEmptyString, wxEmptyString, false);
-    if (dlg.ShowModal() != wxID_OK) return;
+    // Re-fetch after any modal: the vault may have been locked meanwhile.
+    if (dlg.ShowModal() != wxID_OK || !(a = Acc())) return;
     a->add_custom_field(S(dlg.Name()), SecureString(S(dlg.Value())), dlg.Secret());
     RefreshCustomFields();
     FitInside();
@@ -486,7 +498,7 @@ void AccountPanel::EditField() {
     if (!a || row < 0 || (size_t)row >= a->custom_fields().size()) return;
     const CustomField& f = a->custom_fields()[(size_t)row];
     CustomFieldDialog dlg(this, "Edit Field", U(f.name), U(f.value.c_str()), f.secret);
-    if (dlg.ShowModal() != wxID_OK) return;
+    if (dlg.ShowModal() != wxID_OK || !(a = Acc()) || (size_t)row >= a->custom_fields().size()) return;
     a->set_custom_field((size_t)row, S(dlg.Name()), SecureString(S(dlg.Value())), dlg.Secret());
     RefreshCustomFields();
     host_->AccountEdited(id_, false);
@@ -498,7 +510,8 @@ void AccountPanel::RemoveField() {
     if (!a || row < 0 || (size_t)row >= a->custom_fields().size()) return;
     const wxString name = U(a->custom_fields()[(size_t)row].name);
     if (wxMessageBox("Remove the field \"" + name + "\"?", "Remove Field",
-                     wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES)
+                     wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES ||
+        !(a = Acc()) || (size_t)row >= a->custom_fields().size())
         return;
     a->remove_custom_field((size_t)row);
     RefreshCustomFields();
@@ -556,7 +569,7 @@ void AccountPanel::GeneratePassword() {
                      "Generate Password", wxYES_NO | wxICON_QUESTION, this) != wxYES)
         return;
     wxString pw;
-    if (!host_->ChooseGeneratedPassword(&pw) || pw.empty()) return;
+    if (!Acc() || !host_->ChooseGeneratedPassword(&pw) || pw.empty() || !Acc()) return;
     password_->SetValue(pw);
     UpdateStrength();
     Commit();

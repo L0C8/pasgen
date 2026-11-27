@@ -12,6 +12,7 @@
 #include <wx/msgdlg.h>
 #include <wx/progdlg.h>
 #include <wx/settings.h>
+#include <wx/time.h>
 #include <wx/utils.h>
 #include <wx/window.h>
 
@@ -55,8 +56,8 @@ wxBitmap dot_bitmap(const wxColour& c, int px) {
 }  // namespace
 
 wxBitmapBundle ColourDot(const wxColour& colour, int size_dip) {
-    std::vector<wxBitmap> sizes = {dot_bitmap(colour, size_dip), dot_bitmap(colour, size_dip * 3 / 2),
-                                   dot_bitmap(colour, size_dip * 2)};
+    wxVector<wxBitmap> sizes;
+    for (int px : {size_dip, size_dip * 3 / 2, size_dip * 2}) sizes.push_back(dot_bitmap(colour, px));
     return wxBitmapBundle::FromBitmaps(sizes);
 }
 

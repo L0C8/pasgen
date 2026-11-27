@@ -4,6 +4,11 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <vector>
+#include <string_view>
+#include <unordered_set>
+
+#include "util/Wordlist.hpp"
 
 namespace pasgen::wxui {
 
@@ -47,6 +52,52 @@ bool in_row(char a, char b) {
     return false;
 }
 
+// Words from the EFF list (what the passphrase generator draws from) cost
+// an attacker log2(7776) bits each, not their length times the pool.
+bool is_list_word(std::string_view w) {
+    static const std::unordered_set<std::string_view> words = [] {
+        std::unordered_set<std::string_view> set;
+        for (size_t i = 0; i < pasgen::kEffLargeWordlistSize; ++i) set.insert(pasgen::kEffLargeWordlist[i]);
+        return set;
+    }();
+    return words.count(w) > 0;
+}
+
+// A password made of dictionary words joined by separators, like
+// "glade-trophy-unmade": the per-character estimate would wildly overrate
+// it, so price each word as one pick from the list. Returns < 0 if the
+// password is not of that shape.
+double passphrase_bits(const std::string& pw) {
+    std::vector<std::string> parts;
+    std::string cur, seps;
+    for (char c : pw) {
+        if (std::isalpha((unsigned char)c)) {
+            cur += (char)std::tolower((unsigned char)c);
+        } else {
+            if (!cur.empty()) parts.push_back(cur);
+            cur.clear();
+            seps += c;
+        }
+    }
+    if (!cur.empty()) parts.push_back(cur);
+    if (parts.size() < 2) return -1.0;
+    // Separators that are not letters were already accounted as structure;
+    // digits mixed in mean this is not a plain word sequence.
+    for (char c : seps)
+        if (std::isdigit((unsigned char)c)) return -1.0;
+    double bits = 0.0;
+    for (const std::string& p : parts) {
+        // EFF list words: exactly log2(7776). Other letter runs are priced as
+        // a pick from a ~32k-word general dictionary (15 bits), which is how
+        // phrase crackers treat them; a short run is just characters.
+        if (is_list_word(p)) bits += std::log2(7776.0);
+        else if (p.size() >= 3) bits += 15.0;
+        else return -1.0;
+    }
+    const bool one_sep = seps.find_first_not_of(seps.empty() ? ' ' : seps[0]) == std::string::npos;
+    return bits + (one_sep ? 2.0 : 6.0);
+}
+
 }  // namespace
 
 Strength StrengthFromBits(double bits) {
@@ -82,6 +133,8 @@ Strength EstimateStrength(const std::string& pw) {
         effective += predictable ? 0.25 : 1.0;
     }
     double bits = effective * per_char;
+    const double phrase = passphrase_bits(pw);
+    if (phrase >= 0) bits = std::min(bits, phrase);
 
     // A common base word is one choice out of a short list, plus the usual
     // capitalisation and suffix tricks.

@@ -42,6 +42,29 @@ private:
     StrengthBar* meter_ = nullptr;
 };
 
+// The only thing between launch and the vault: which file, and its master
+// password. `unlock` is called with both and returns an error message, or
+// an empty string on success; a wrong password keeps the prompt open.
+class UnlockDialog : public wxDialog {
+public:
+    enum { ID_NEW_VAULT = wxID_HIGHEST + 100 };
+    using UnlockFn = std::function<wxString(const std::string& path, const SecureString& pw)>;
+
+    UnlockDialog(wxWindow* parent, const wxString& path, UnlockFn unlock);
+    ~UnlockDialog() override;
+
+private:
+    void SetPath(const wxString& path);
+    void TryUnlock();
+
+    UnlockFn unlock_;
+    wxString path_;
+    wxStaticText* file_ = nullptr;
+    wxStaticText* folder_ = nullptr;
+    SecretField* password_ = nullptr;
+    wxStaticText* error_ = nullptr;
+};
+
 class NewVaultDialog : public wxDialog {
 public:
     NewVaultDialog(wxWindow* parent, const wxString& suggested_path);

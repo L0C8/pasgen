@@ -7,7 +7,7 @@ A secure, cross-platform password manager. Stores credentials in a `.pif` databa
 - Two-layer cipher cascade (ChaCha20-Poly1305 then AES-256-GCM) with a fully authenticated header
 - Argon2id key derivation, auto-calibrated to the machine (PBKDF2-SHA256 fallback, recorded in the header)
 - TOTP / authenticator app support (live code display with countdown timer)
-- Secure password generator — random or passphrase mode
+- Secure password generator: random characters, or passphrases from the EFF large wordlist (12.9 bits per word)
 - Password history (last 10 passwords per account)
 - Categories, custom user-defined fields, favourites and archiving
 - Idle auto-lock and automatic clipboard clearing
@@ -143,6 +143,43 @@ cmake --build build -j4
 
 ---
 
+## Native desktop app (wxWidgets)
+
+`pasgen-wx` is a second frontend over the same core: native Win32 controls on
+Windows, GTK on Linux, Cocoa on macOS. It reads and writes the same `.pif`
+vaults as the ImGui app.
+
+![pasgen-wx](docs/pasgen-wx.png)
+
+It opens straight to an unlock prompt. After that it is one window: accounts
+grouped by category on the left, the selected account on the right.
+
+```bash
+# Debian/Ubuntu: sudo apt install libwxgtk3.2-dev   (Windows: vcpkg install wxwidgets)
+cmake -B build -DPASGEN_BUILD_WX=ON -DPASGEN_BUILD_IMGUI=OFF
+cmake --build build -j
+./build/pasgen-wx [vault.pif]
+```
+
+On top of what the ImGui app does, it:
+
+- **Keeps copied secrets out of clipboard history.** On Windows they are marked
+  `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory = 0`
+  and `CanUploadToCloudClipboard = 0`, so Win+V history and cloud sync skip them.
+  On Linux they carry `x-kde-passwordManagerHint: secret`, which Klipper and
+  other clipboard managers honour.
+- **Enforces a minimum master password.** It refuses anything under 10 characters
+  and asks for confirmation below roughly 50 bits.
+- **Uses a pattern-aware strength estimate.** It discounts repeats, runs,
+  keyboard rows, common words and word lists, so `Password1!` rates very weak
+  rather than strong.
+- **Derives keys off the UI thread.** Argon2id runs in the background with a
+  progress dialog, so the window never freezes.
+
+Run the core tests with `ctest --test-dir build` (or `./build/pasgen-tests`).
+
+---
+
 ## Database Format
 
 Pasgen uses the `.pif` binary format, **version 3**:
@@ -241,3 +278,10 @@ Strong ciphers do not help if the vault is left open. Pasgen also:
 ### TOTP Setup
 
 Paste the Base32 secret from your authenticator app's QR code setup screen into the **TOTP** field. The current 6-digit code and countdown timer are shown automatically.
+
+---
+
+## Credits
+
+Passphrases use the [EFF large wordlist](https://www.eff.org/dice) by the
+Electronic Frontier Foundation, licensed CC BY 3.0 US.
