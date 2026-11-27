@@ -14,11 +14,15 @@
     .\update.ps1
     .\update.ps1 -Check
     .\update.ps1 -Force
+    .\update.ps1 -NoWx     # rebuild without pasgen-wx
+    .\update.ps1 -WxOnly   # rebuild only pasgen-wx and pasgen-check
 #>
 [CmdletBinding()]
 param(
     [switch] $Check,
     [switch] $Force,
+    [switch] $NoWx,
+    [switch] $WxOnly,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $Passthru
 )
@@ -92,5 +96,10 @@ if ($local -eq $remote) {
 Say 'Re-checking dependencies and rebuilding'
 $installer = Join-Path $RepoDir 'install.ps1'
 if (-not (Test-Path $installer)) { Die "install.ps1 is missing from $RepoDir" }
-if ($Passthru) { & $installer @Passthru } else { & $installer }
+# The frontend switches are forwarded by name (hashtable splat), which binds
+# them as real switches; anything else goes through as before.
+$frontend = @{}
+if ($NoWx)   { $frontend['NoWx']   = $true }
+if ($WxOnly) { $frontend['WxOnly'] = $true }
+if ($Passthru) { & $installer @frontend @Passthru } else { & $installer @frontend }
 exit $LASTEXITCODE

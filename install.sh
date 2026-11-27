@@ -3,8 +3,11 @@
 # Pasgen — out-of-the-box installer for Linux and macOS.
 #
 # Checks what is already on the machine, installs only the dependencies that
-# are actually missing, builds pasgen from source, and installs the binary
-# together with its bundled fonts.
+# are actually missing, builds pasgen from source, and installs the binaries
+# together with the bundled fonts:
+#   pasgen        the ImGui/SDL2 app
+#   pasgen-wx     the native wxWidgets app (same .pif vaults)
+#   pasgen-check  checks that a vault round-trips losslessly in this build
 #
 # Usage:
 #   ./install.sh                     Build and install into /usr/local (uses sudo)
@@ -13,6 +16,8 @@
 #   ./install.sh --clean             Delete the build tree before building
 #   ./install.sh --jobs 4            Override the parallel build job count
 #   ./install.sh --check             Only report dependency status, change nothing
+#   ./install.sh --no-wx             Skip the wxWidgets app (pasgen-wx)
+#   ./install.sh --wx-only           Build only pasgen-wx (no SDL2/OpenGL needed)
 #
 set -eo pipefail
 
@@ -23,6 +28,9 @@ SKIP_DEPS=0
 CLEAN=0
 CHECK_ONLY=0
 JOBS=""
+BUILD_WX=1
+BUILD_IMGUI=1
+WX_CONFIG=""
 
 # ── output helpers ───────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -47,7 +55,9 @@ while [ $# -gt 0 ]; do
         --no-deps) SKIP_DEPS=1; shift ;;
         --clean) CLEAN=1; shift ;;
         --check) CHECK_ONLY=1; shift ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --no-wx) BUILD_WX=0; shift ;;
+        --wx-only) BUILD_IMGUI=0; BUILD_WX=1; shift ;;
+        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
 done
@@ -84,6 +94,7 @@ pkg_name() {
         apt:sdl2)         echo "libsdl2-dev" ;;
         apt:argon2)       echo "libargon2-dev" ;;
         apt:opengl)       echo "libgl1-mesa-dev" ;;
+        apt:wx)           echo "libwxgtk3.2-dev" ;;
 
         dnf:compiler)     echo "gcc-c++ make" ;;
         dnf:cmake)        echo "cmake" ;;
@@ -93,6 +104,7 @@ pkg_name() {
         dnf:sdl2)         echo "SDL2-devel" ;;
         dnf:argon2)       echo "libargon2-devel" ;;
         dnf:opengl)       echo "mesa-libGL-devel" ;;
+        dnf:wx)           echo "wxGTK-devel" ;;
 
         pacman:compiler)  echo "base-devel" ;;
         pacman:cmake)     echo "cmake" ;;
@@ -102,6 +114,7 @@ pkg_name() {
         pacman:sdl2)      echo "sdl2" ;;
         pacman:argon2)    echo "argon2" ;;
         pacman:opengl)    echo "mesa" ;;
+        pacman:wx)        echo "wxwidgets-gtk3" ;;
 
         zypper:compiler)  echo "gcc-c++ make" ;;
         zypper:cmake)     echo "cmake" ;;
@@ -111,6 +124,7 @@ pkg_name() {
         zypper:sdl2)      echo "libSDL2-devel" ;;
         zypper:argon2)    echo "libargon2-devel" ;;
         zypper:opengl)    echo "Mesa-libGL-devel" ;;
+        zypper:wx)        echo "wxWidgets-3_2-devel" ;;
 
         apk:compiler)     echo "build-base" ;;
         apk:cmake)        echo "cmake" ;;
@@ -120,6 +134,7 @@ pkg_name() {
         apk:sdl2)         echo "sdl2-dev" ;;
         apk:argon2)       echo "argon2-dev" ;;
         apk:opengl)       echo "mesa-dev" ;;
+        apk:wx)           echo "wxwidgets-dev" ;;
 
         # macOS: the compiler comes from the Xcode Command Line Tools and
         # OpenGL is a system framework, so neither maps to a formula.
@@ -131,6 +146,7 @@ pkg_name() {
         brew:sdl2)        echo "sdl2" ;;
         brew:argon2)      echo "argon2" ;;
         brew:opengl)      echo "" ;;
+        brew:wx)          echo "wxwidgets" ;;
 
         *) echo "" ;;
     esac
@@ -147,11 +163,29 @@ dep_label() {
         sdl2)      echo "SDL2 headers" ;;
         argon2)    echo "Argon2 headers" ;;
         opengl)    echo "OpenGL headers" ;;
+        wx)        echo "wxWidgets 3.2+ (for pasgen-wx)" ;;
         *)         echo "$1" ;;
     esac
 }
 
 # ── dependency detection ─────────────────────────────────────────────────────
+# Distros name the wxWidgets config script differently (Arch: wx-config-gtk3).
+# Sets WX_CONFIG to the first one that reports 3.2 or newer.
+find_wx_config() {
+    local c v major minor
+    for c in wx-config wx-config-gtk3 wx-config-3.2 wx-config-3.3; do
+        command -v "$c" >/dev/null 2>&1 || continue
+        v="$("$c" --version 2>/dev/null)" || continue
+        major="${v%%.*}"; minor="${v#*.}"; minor="${minor%%.*}"
+        [ -n "$major" ] || continue
+        if [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 2 ]; }; then
+            WX_CONFIG="$(command -v "$c")"
+            return 0
+        fi
+    done
+    return 1
+}
+
 cmake_new_enough() {
     local v major minor
     v="$(cmake --version 2>/dev/null | head -1 | awk '{print $3}')" || return 1
@@ -186,6 +220,7 @@ dep_present() {
         sdl2)      lib_present sdl2      "sdl2" ;;
         argon2)    lib_present libargon2 "argon2" ;;
         opengl)    [ "$OS" = "macos" ] && return 0; lib_present gl "" ;;
+        wx)        find_wx_config ;;
         *)         return 1 ;;
     esac
 }
@@ -302,10 +337,17 @@ fi
 
 # Required to build at all.
 REQUIRED_DEPS="compiler cmake pkgconfig git openssl"
-[ "$OS" = "linux" ] && REQUIRED_DEPS="$REQUIRED_DEPS opengl"
+[ "$OS" = "linux" ] && [ "$BUILD_IMGUI" -eq 1 ] && REQUIRED_DEPS="$REQUIRED_DEPS opengl"
 # CMake can fall back without these (SDL2 gets fetched and built from source,
 # Argon2 degrades to PBKDF2), but the build is far better off with them.
-OPTIONAL_DEPS="sdl2 argon2"
+OPTIONAL_DEPS="argon2"
+[ "$BUILD_IMGUI" -eq 1 ] && OPTIONAL_DEPS="sdl2 $OPTIONAL_DEPS"
+# wxWidgets is only needed for pasgen-wx. With --wx-only it is required;
+# otherwise a machine without it still gets the ImGui app.
+if [ "$BUILD_WX" -eq 1 ]; then
+    if [ "$BUILD_IMGUI" -eq 0 ]; then REQUIRED_DEPS="$REQUIRED_DEPS wx"
+    else OPTIONAL_DEPS="$OPTIONAL_DEPS wx"; fi
+fi
 
 say "Checking dependencies"
 missing_required="$(find_missing $REQUIRED_DEPS || true)"
@@ -335,9 +377,14 @@ elif [ -n "$missing_required$missing_optional" ]; then
         install_packages $base_missing
     fi
 
-    lib_missing="$(find_missing openssl sdl2 argon2 $([ "$OS" = "linux" ] && echo opengl) || true)"
+    lib_missing="$(find_missing $(printf '%s\n' $REQUIRED_DEPS $OPTIONAL_DEPS | grep -vE '^(compiler|cmake|pkgconfig|git|wx)$') || true)"
     if [ -n "$lib_missing" ]; then
         install_packages $lib_missing
+    fi
+    # Separately, so a distro without a wx 3.2 package (e.g. Ubuntu 22.04)
+    # does not stop the rest from installing.
+    if [ "$BUILD_WX" -eq 1 ] && ! dep_present wx; then
+        install_packages wx || warn "could not install wxWidgets from $PM"
     fi
 
     say "Re-checking dependencies"
@@ -351,6 +398,19 @@ else
     ok "nothing to install"
 fi
 
+# ── decide what to build ─────────────────────────────────────────────────────
+if [ "$BUILD_WX" -eq 1 ] && ! find_wx_config; then
+    if [ "$BUILD_IMGUI" -eq 0 ]; then
+        die "wxWidgets 3.2+ not found, so pasgen-wx cannot be built"
+    fi
+    warn "wxWidgets 3.2+ not found: building pasgen only, without pasgen-wx"
+    note "Install it (e.g. libwxgtk3.2-dev) and re-run to add pasgen-wx."
+    BUILD_WX=0
+fi
+onoff() { [ "$1" -eq 1 ] && echo ON || echo OFF; }
+CMAKE_ARGS="-DPASGEN_BUILD_IMGUI=$(onoff "$BUILD_IMGUI") -DPASGEN_BUILD_WX=$(onoff "$BUILD_WX") -DPASGEN_BUILD_TESTS=OFF"
+[ -n "$WX_CONFIG" ] && [ "$BUILD_WX" -eq 1 ] && CMAKE_ARGS="$CMAKE_ARGS -DwxWidgets_CONFIG_EXECUTABLE=$WX_CONFIG"
+
 # ── build ────────────────────────────────────────────────────────────────────
 check_build_dir_ownership
 
@@ -361,8 +421,9 @@ fi
 
 jobs="$(job_count)"
 say "Configuring"
-note "The first build downloads ImGui, nlohmann/json and portable-file-dialogs."
-cmake -S "$REPO_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
+[ "$BUILD_IMGUI" -eq 1 ] && note "The first build downloads ImGui, nlohmann/json and portable-file-dialogs."
+# shellcheck disable=SC2086
+cmake -S "$REPO_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release $CMAKE_ARGS
 
 say "Building with $jobs parallel jobs"
 cmake --build "$BUILD_DIR" -j "$jobs"
@@ -378,9 +439,12 @@ else
 fi
 
 printf '\n'
-ok "pasgen installed to $PREFIX/bin/pasgen"
+[ "$BUILD_IMGUI" -eq 1 ] && ok "pasgen        installed to $PREFIX/bin/pasgen"
+[ "$BUILD_WX" -eq 1 ]    && ok "pasgen-wx     installed to $PREFIX/bin/pasgen-wx"
+ok "pasgen-check  installed to $PREFIX/bin/pasgen-check"
+note "Check a vault converts cleanly (read-only): pasgen-check path/to/vault.pif"
 case ":$PATH:" in
-    *":$PREFIX/bin:"*) note "Run: pasgen" ;;
+    *":$PREFIX/bin:"*) note "Run: $([ "$BUILD_IMGUI" -eq 1 ] && echo pasgen)$([ "$BUILD_IMGUI" -eq 1 ] && [ "$BUILD_WX" -eq 1 ] && echo ' or ')$([ "$BUILD_WX" -eq 1 ] && echo pasgen-wx)" ;;
     *) warn "$PREFIX/bin is not on your PATH. Add this to your shell profile:"
        note "export PATH=\"$PREFIX/bin:\$PATH\"" ;;
 esac

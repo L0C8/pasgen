@@ -36,6 +36,31 @@ cd pasgen
 The installer detects what is already present and installs only what is
 missing, so re-running it is cheap and safe.
 
+It builds and installs three programs side by side:
+
+| Program | What it is |
+|---------|------------|
+| `pasgen` | The ImGui/SDL2 app |
+| `pasgen-wx` | The native wxWidgets app. It opens the same `.pif` vaults. |
+| `pasgen-check` | Opens a vault read-only and confirms it round-trips losslessly in this build |
+
+Use `--no-wx` / `-NoWx` to skip `pasgen-wx`. On Windows the first wxWidgets
+build through vcpkg takes 10-20 minutes. Use `--wx-only` / `-WxOnly` to build
+only the native app. If wxWidgets 3.2 is not available (for example on
+Ubuntu 22.04), the installer warns and builds `pasgen` on its own.
+
+### Moving a vault to the new build
+
+```bash
+pasgen-check ~/vault.pif     # asks for the master password; never writes the file
+```
+
+It prints what is in the vault, then saves a copy to the temp folder, reopens
+the copy, and compares every account, field, category, password history entry
+and timestamp. `OK` means the vault reads the same in this build. Both apps
+read and write the same format, so you can open a vault in `pasgen-wx`, save
+it, and still open it in `pasgen` (or an older build) afterwards.
+
 - **Linux** — uses apt, dnf, pacman, zypper or apk, whichever the system has.
   Installs a C++ toolchain, CMake, pkg-config, Git, and the OpenSSL, SDL2,
   Argon2 and OpenGL development packages.
@@ -53,6 +78,8 @@ missing, so re-running it is cheap and safe.
 | `--no-deps` | `-NoDeps` | Skip dependency installation entirely |
 | `--clean` | `-Clean` | Delete the build tree before building |
 | `--jobs N` | `-Jobs N` | Override the parallel build job count |
+| `--no-wx` | `-NoWx` | Skip the wxWidgets app (`pasgen-wx`) |
+| `--wx-only` | `-WxOnly` | Build only `pasgen-wx` and `pasgen-check` |
 
 To install without root on Linux or macOS:
 

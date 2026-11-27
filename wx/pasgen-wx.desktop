@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Pasgen
+GenericName=Password Manager
+Comment=Local, offline password manager
+Exec=pasgen-wx %f
+Icon=pasgen
+Terminal=false
+Categories=Utility;Security;
+Keywords=password;vault;passwords;totp;

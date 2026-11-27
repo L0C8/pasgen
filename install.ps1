@@ -5,8 +5,11 @@
 .DESCRIPTION
     Checks what is already on the machine, installs only the missing
     dependencies (Git, CMake, the MSVC C++ build tools via winget, and
-    OpenSSL / SDL2 / Argon2 via vcpkg), builds pasgen from source, and
-    installs the executable together with its DLLs and bundled fonts.
+    OpenSSL / SDL2 / Argon2 / wxWidgets via vcpkg), builds from source, and
+    installs the executables together with their DLLs and bundled fonts:
+      pasgen.exe        the ImGui/SDL2 app
+      pasgen-wx.exe     the native wxWidgets app (same .pif vaults)
+      pasgen-check.exe  checks that a vault round-trips losslessly
 
 .EXAMPLE
     .\install.ps1
@@ -14,6 +17,8 @@
     .\install.ps1 -NoDeps
     .\install.ps1 -Clean
     .\install.ps1 -Check
+    .\install.ps1 -NoWx      # skip pasgen-wx (and the long wxWidgets build)
+    .\install.ps1 -WxOnly    # only pasgen-wx and pasgen-check
 #>
 [CmdletBinding()]
 param(
@@ -22,8 +27,14 @@ param(
     [int]    $Jobs = 0,
     [switch] $NoDeps,
     [switch] $Clean,
-    [switch] $Check
+    [switch] $Check,
+    [switch] $NoWx,
+    [switch] $WxOnly
 )
+
+if ($NoWx -and $WxOnly) { Write-Host 'error: -NoWx and -WxOnly cannot be combined' -ForegroundColor Red; exit 1 }
+$BuildWx    = -not $NoWx
+$BuildImgui = -not $WxOnly
 
 # Native commands (git, cmake, winget, vcpkg) are checked explicitly via
 # $LASTEXITCODE below. 'Stop' is deliberately NOT used globally: on Windows
@@ -159,10 +170,24 @@ Ok "vcpkg at $VcpkgRoot"
 $vcpkgExe = Join-Path $VcpkgRoot 'vcpkg.exe'
 if (-not $NoDeps) {
     # vcpkg is itself idempotent: already-built ports are skipped.
+    $ports = @("openssl:$Triplet", "argon2:$Triplet")
+    if ($BuildImgui) { $ports += "sdl2:$Triplet" }
     Say "Installing C libraries via vcpkg ($Triplet)"
     Note 'The first run compiles OpenSSL and SDL2 and can take a while.'
-    & $vcpkgExe install "openssl:$Triplet" "sdl2:$Triplet" "argon2:$Triplet"
+    & $vcpkgExe install @ports
     if ($LASTEXITCODE -ne 0) { Die 'vcpkg failed to install the required libraries' }
+
+    # Separately, so a wxWidgets problem never costs you the ImGui app.
+    if ($BuildWx) {
+        Say "Installing wxWidgets via vcpkg ($Triplet) for pasgen-wx"
+        Note 'The first wxWidgets build takes 10-20 minutes. Skip it with -NoWx.'
+        & $vcpkgExe install "wxwidgets:$Triplet"
+        if ($LASTEXITCODE -ne 0) {
+            if ($WxOnly) { Die 'vcpkg failed to build wxWidgets' }
+            Warn 'vcpkg failed to build wxWidgets: building pasgen only, without pasgen-wx'
+            $BuildWx = $false
+        }
+    }
 }
 
 # --- build --------------------------------------------------------------------
@@ -174,9 +199,11 @@ if ($Clean -and (Test-Path $BuildDir)) {
 if ($Jobs -le 0) { $Jobs = [Environment]::ProcessorCount }
 $toolchain = Join-Path $VcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
 
+function OnOff ($b) { if ($b) { 'ON' } else { 'OFF' } }
 Say 'Configuring'
-Note 'The first build downloads ImGui, nlohmann/json and portable-file-dialogs.'
-& cmake -S $RepoDir -B $BuildDir -DCMAKE_TOOLCHAIN_FILE="$toolchain" -DVCPKG_TARGET_TRIPLET="$Triplet"
+if ($BuildImgui) { Note 'The first build downloads ImGui, nlohmann/json and portable-file-dialogs.' }
+& cmake -S $RepoDir -B $BuildDir -DCMAKE_TOOLCHAIN_FILE="$toolchain" -DVCPKG_TARGET_TRIPLET="$Triplet" `
+    "-DPASGEN_BUILD_IMGUI=$(OnOff $BuildImgui)" "-DPASGEN_BUILD_WX=$(OnOff $BuildWx)" -DPASGEN_BUILD_TESTS=OFF
 if ($LASTEXITCODE -ne 0) { Die 'CMake configuration failed' }
 
 Say "Building with $Jobs parallel jobs"
@@ -208,6 +235,11 @@ if (($userPath -split ';') -notcontains $binDir) {
 }
 
 Write-Host ''
-Ok "pasgen installed to $binDir\pasgen.exe"
-Note 'Run: pasgen'
+if ($BuildImgui) { Ok "pasgen.exe        installed to $binDir" }
+if ($BuildWx)    { Ok "pasgen-wx.exe     installed to $binDir" }
+Ok "pasgen-check.exe  installed to $binDir"
+Note 'Check a vault converts cleanly (read-only): pasgen-check path\to\vault.pif'
+if ($BuildWx -and $BuildImgui) { Note 'Run: pasgen  or  pasgen-wx' }
+elseif ($BuildWx) { Note 'Run: pasgen-wx' }
+else { Note 'Run: pasgen' }
 Note 'Update later with: .\update.ps1'

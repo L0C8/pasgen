@@ -13,6 +13,7 @@
 #   ./update.sh --check             Report whether an update is available, change nothing
 #   ./update.sh --force             Rebuild even when already up to date
 #   ./update.sh --prefix ~/.local   Any other flag is forwarded to install.sh
+#   ./update.sh --no-wx             (e.g. --no-wx / --wx-only, see install.sh --help)
 #
 set -eo pipefail
 
@@ -37,7 +38,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --check) CHECK_ONLY=1; shift ;;
         --force) FORCE=1; shift ;;
-        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) PASSTHRU="$PASSTHRU $1"; shift ;;
     esac
 done

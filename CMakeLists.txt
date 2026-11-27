@@ -18,6 +18,7 @@ endif()
 option(PASGEN_BUILD_IMGUI "Build the ImGui/SDL2 desktop app (pasgen)" ON)
 option(PASGEN_BUILD_WX    "Build the native wxWidgets desktop app (pasgen-wx)" OFF)
 option(PASGEN_BUILD_TESTS "Build the core unit tests (pasgen-tests)" ON)
+option(PASGEN_BUILD_CHECK "Build pasgen-check, the vault round-trip checker" ON)
 
 include(FetchContent)
 
@@ -313,6 +314,20 @@ if(PASGEN_BUILD_WX)
     endif()
     target_link_libraries(pasgen-wx PRIVATE pasgen_core ${wxWidgets_LIBRARIES})
     install(TARGETS pasgen-wx RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} BUNDLE DESTINATION .)
+    if(UNIX AND NOT APPLE)
+        # Start-menu entry and icon, so the native app shows up in the desktop launcher.
+        install(FILES ${CMAKE_SOURCE_DIR}/wx/pasgen-wx.desktop
+                DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+        install(FILES ${CMAKE_SOURCE_DIR}/assets/icon.svg
+                DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps RENAME pasgen.svg)
+    endif()
+endif()
+
+# --- Vault round-trip checker ---------------------------------------------------
+if(PASGEN_BUILD_CHECK)
+    add_executable(pasgen-check tools/pasgen_check.cpp)
+    target_link_libraries(pasgen-check PRIVATE pasgen_core)
+    install(TARGETS pasgen-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # --- Tests --------------------------------------------------------------------
