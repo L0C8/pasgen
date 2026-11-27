@@ -291,6 +291,7 @@ if(PASGEN_BUILD_WX)
     endif()
     add_executable(pasgen-wx WIN32 MACOSX_BUNDLE
         wx/app.cpp
+        wx/common.cpp
         wx/main_frame.cpp
         wx/account_panel.cpp
         wx/dialogs.cpp
