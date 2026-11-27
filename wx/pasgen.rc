@@ -1,0 +1,6 @@
+// Windows resources: the application icon (named "aaaa" so it sorts first, which is the one
+// Explorer shows), and the common-controls manifest that gives native,
+// themed controls with per-monitor DPI awareness.
+aaaa ICON "pasgen.ico"
+#define wxUSE_DPI_AWARE_MANIFEST 2
+#include "wx/msw/wx.rc"

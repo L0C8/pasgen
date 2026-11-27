@@ -5,6 +5,7 @@
 #include "core/Database.hpp"
 #include <algorithm>
 #include <filesystem>
+#include "util/AtomicFile.hpp"
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -324,7 +325,7 @@ const SecureBytes& Database::session_key() {
 }
 
 void Database::load_from_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(path_from_utf8(path), std::ios::binary);
     if (!f) throw DatabaseException("Failed to open: " + path);
 
     f.seekg(0, std::ios::end);
@@ -548,24 +549,15 @@ void Database::write_to_file(const std::string& path) {
     std::vector<uint8_t> ct(enc.begin(), enc.end() - CryptoEngine::TAG_SIZE);
     std::vector<uint8_t> tag(enc.end() - CryptoEngine::TAG_SIZE, enc.end());
 
-    // Write to a temporary alongside the target and rename, so an interrupted
-    // save cannot leave a half-written vault where the real one used to be.
-    const std::string tmp = path + ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) throw DatabaseException("Failed to write: " + tmp);
-        f.write((char*)header.data(), header.size());
-        f.write((char*)ct.data(), ct.size());
-        f.write((char*)tag.data(), tag.size());
-        f.flush();
-        if (!f) throw DatabaseException("Write failed");
-    }
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
-        std::filesystem::remove(tmp, ec);
-        throw DatabaseException("Failed to replace database file: " + path);
-    }
+    // Temp file + flush + rename (see util/AtomicFile.hpp), so an interrupted
+    // save cannot leave a half-written file where the real one used to be.
+    std::vector<uint8_t> file;
+    file.reserve(header.size() + ct.size() + tag.size());
+    file.insert(file.end(), header.begin(), header.end());
+    file.insert(file.end(), ct.begin(), ct.end());
+    file.insert(file.end(), tag.begin(), tag.end());
+    try { write_file_atomic(path, file); }
+    catch (const std::exception& e) { throw DatabaseException(e.what()); }
 
     metadata_.modified_at = std::chrono::system_clock::now();
 }

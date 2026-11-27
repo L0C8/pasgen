@@ -6,7 +6,6 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
-#include <cstring>
 
 namespace pasgen {
 
@@ -325,7 +324,10 @@ SecureBytes CryptoEngine::derive_key(
     const std::vector<uint8_t>& salt,
     const Argon2Params& params)
 {
-    return KeyDerivation::derive_argon2id(password, salt, KEY_SIZE, params);
+    // Dispatch on the KDF recorded in the header. Calling derive_argon2id()
+    // unconditionally ignored params.kdf, so a PBKDF2 database (or a build
+    // without Argon2) could never be opened.
+    return KeyDerivation::derive_key(password, salt, KEY_SIZE, params);
 }
 
 } // namespace pasgen

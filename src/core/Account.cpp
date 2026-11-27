@@ -68,7 +68,9 @@ void Account::set_username(const std::string& v) { username_ = v; touch(); }
 void Account::set_notes(const std::string& v) { notes_ = v;  touch(); }
 void Account::set_totp_secret(const std::string& v) { totp_secret_ = v; touch(); }
 void Account::set_category_id(const std::string& v) { category_id_ = v; touch(); }
-void Account::set_order(int v) { order_ = v; touch(); }
+// Sort position is bookkeeping, not an edit: Database renumbers it on every
+// load, and touching here bumped every account's modified time on open.
+void Account::set_order(int v) { order_ = v; }
 void Account::set_favorite(bool v) { favorite_ = v; touch(); }
 void Account::set_archived(bool v) { archived_ = v; touch(); }
 

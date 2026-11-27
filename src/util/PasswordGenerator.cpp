@@ -1,5 +1,7 @@
 #include "util/PasswordGenerator.hpp"
+#include "util/Wordlist.hpp"
 #include <openssl/rand.h>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 
@@ -21,7 +23,7 @@ std::string PasswordGenerator::generate(
     if (use_uppercase) charset += uppercase_chars;
     if (use_digits)    charset += digit_chars;
     if (use_symbols)   charset += symbol_chars;
-    if (charset.empty()) charset = lowercase_chars;
+    if (charset.empty()) { charset = lowercase_chars; use_lowercase = true; }
 
     std::string required;
     if (use_lowercase)                     required += lowercase_chars[secure_random_index(std::strlen(lowercase_chars))];
@@ -41,36 +43,44 @@ std::string PasswordGenerator::generate(
 }
 
 std::string PasswordGenerator::generate_passphrase(size_t word_count, const std::string& sep) {
-    static const char* words[] = {
-        "apple","banana","cherry","dragon","eagle","falcon","grape","harbor","island","jungle",
-        "kettle","lemon","mango","nectar","orange","pepper","quartz","river","sunset","timber",
-        "umbrella","violet","window","yellow","zebra","anchor","beacon","castle","desert","ember",
-        "forest","glacier","horizon","ivory","jasper","kingdom","lantern","meadow","nebula","ocean",
-        "planet","quantum","rainbow","shadow","thunder","universe","valley","whisper","xenon",
-        "youth","zephyr","autumn","breeze","cosmic","diamond","eclipse"
-    };
-    static const size_t NWORDS = sizeof(words) / sizeof(words[0]);
     if (word_count == 0) return "";
     std::string result;
     for (size_t i = 0; i < word_count; ++i) {
         if (i > 0) result += sep;
-        result += words[secure_random_index(NWORDS)];
+        result += kEffLargeWordlist[secure_random_index(kEffLargeWordlistSize)];
     }
     return result;
 }
 
-uint8_t PasswordGenerator::secure_random_byte() {
-    uint8_t b;
-    if (RAND_bytes(&b, 1) != 1) throw std::runtime_error("Failed to generate random byte");
-    return b;
+double PasswordGenerator::entropy_bits(size_t length, bool lc, bool uc, bool dig, bool sym) {
+    size_t pool = 0;
+    if (lc)  pool += std::strlen(lowercase_chars);
+    if (uc)  pool += std::strlen(uppercase_chars);
+    if (dig) pool += std::strlen(digit_chars);
+    if (sym) pool += std::strlen(symbol_chars);
+    if (pool == 0) pool = std::strlen(lowercase_chars);
+    // The one-of-each-class guarantee trims the space slightly; for any
+    // practical length the difference is a fraction of a bit.
+    return (double)length * std::log2((double)pool);
+}
+
+double PasswordGenerator::passphrase_entropy_bits(size_t word_count) {
+    return (double)word_count * std::log2((double)kEffLargeWordlistSize);
 }
 
 size_t PasswordGenerator::secure_random_index(size_t max) {
     if (max <= 1) return 0;
-    size_t limit = (256 / max) * max;
-    uint8_t r;
-    do { r = secure_random_byte(); } while (r >= limit);
-    return r % max;
+    if (max > 0xFFFFFFFFu) throw std::invalid_argument("secure_random_index: range too large");
+    // Largest multiple of max that fits in 32 bits; anything at or above it is
+    // redrawn so every index is equally likely.
+    const uint64_t range = 0x100000000ull;
+    const uint64_t limit = range - (range % max);
+    uint32_t r;
+    do {
+        if (RAND_bytes(reinterpret_cast<unsigned char*>(&r), sizeof(r)) != 1)
+            throw std::runtime_error("Failed to generate random bytes");
+    } while ((uint64_t)r >= limit);
+    return (size_t)(r % max);
 }
 
 } // namespace pasgen

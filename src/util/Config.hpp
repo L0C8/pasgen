@@ -12,7 +12,7 @@ struct PasswordGenDefaults {
     bool digits       = true;
     bool symbols      = true;
     bool passphrase   = false;
-    int  words        = 4;
+    int  words        = 6;   // 6 EFF words = ~77 bits
     std::string separator = "-";
 };
 
